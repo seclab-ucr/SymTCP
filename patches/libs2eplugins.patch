@@ -1,0 +1,4298 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index b598d61..1aac966 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -125,6 +125,13 @@ add_library(
+     s2e/Plugins/Lua/LuaExpression.cpp
+     s2e/Plugins/Lua/LuaCoreEvents.cpp
+ 
++    # My plugins
++    s2e/Plugins/MyPlugins/MemRangeDetector.cpp
++    s2e/Plugins/MyPlugins/BranchCoverage.cpp
++    s2e/Plugins/MyPlugins/TCPSymbolizer.cpp
++    s2e/Plugins/MyPlugins/MyDebugger.cpp
++    s2e/Plugins/MyPlugins/MyVmi.cpp
++
+     ${PROTO_SRCS} ${PROTO_HDRS}
+ )
+ 
+diff --git a/src/s2e/Plugins/Core/BaseInstructions.cpp b/src/s2e/Plugins/Core/BaseInstructions.cpp
+index d3a28bb..de8d63a 100644
+--- a/src/s2e/Plugins/Core/BaseInstructions.cpp
++++ b/src/s2e/Plugins/Core/BaseInstructions.cpp
+@@ -764,6 +764,10 @@ void BaseInstructions::forkCount(S2EExecutionState *state) {
+     state->addConstraint(cond);
+ }
+ 
++void BaseInstructions::alwaysKlee(S2EExecutionState *state, uint8_t enabled) {
++    s2e()->getExecutor()->setExecuteAlwaysKlee(enabled);
++}
++
+ /** Handle s2e_op instruction. Instructions:
+     0f 3f XX XX XX XX XX XX XX XX
+     XX: opcode
+diff --git a/src/s2e/Plugins/Core/BaseInstructions.h b/src/s2e/Plugins/Core/BaseInstructions.h
+index 8663b4f..ee73723 100644
+--- a/src/s2e/Plugins/Core/BaseInstructions.h
++++ b/src/s2e/Plugins/Core/BaseInstructions.h
+@@ -53,6 +53,8 @@ public:
+ 
+     virtual void handleOpcodeInvocation(S2EExecutionState *state, uint64_t guestDataPtr, uint64_t guestDataSize);
+ 
++    void alwaysKlee(S2EExecutionState *state, uint8_t enabled);
++
+ private:
+     OSMonitor *m_monitor;
+ 
+diff --git a/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.cpp b/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.cpp
+index fd1375c..3a887f0 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.cpp
++++ b/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.cpp
+@@ -54,7 +54,7 @@ void CallSiteMonitor::onTimer() {
+     m_lastDumpedTime = 0;
+ }
+ 
+-void CallSiteMonitor::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++void CallSiteMonitor::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb,
+                                           uint64_t pc, bool isStatic, uint64_t staticTarget) {
+     if ((tb->flags & HF_CPL_MASK) != 3) {
+         return;
+diff --git a/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.h b/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.h
+index c5fcae6..280bd12 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.h
++++ b/src/s2e/Plugins/ExecutionMonitors/CallSiteMonitor.h
+@@ -119,7 +119,7 @@ private:
+     unsigned m_dumpPeriod;
+     unsigned m_lastDumpedTime;
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
+                              bool isStatic, uint64_t staticTarget);
+ 
+     void onInstruction(S2EExecutionState *state, uint64_t source_pc, unsigned source_type);
+diff --git a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.cpp b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.cpp
+index 3d15ec3..cad97f4 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.cpp
++++ b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.cpp
+@@ -56,13 +56,13 @@ FunctionMonitor::CallSignal *FunctionMonitor::getCallSignal(S2EExecutionState *s
+     return plgState->getCallSignal(eip, cr3);
+ }
+ 
+-void FunctionMonitor::slotModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state,
++void FunctionMonitor::slotModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state,
+                                                   const ModuleDescriptor &module, TranslationBlock *tb, uint64_t pc,
+                                                   bool isStatic, uint64_t staticTarget) {
+-    slotTranslateBlockEnd(signal, state, tb, pc, isStatic, staticTarget);
++    slotTranslateBlockEnd(signal, signal2, state, tb, pc, isStatic, staticTarget);
+ }
+ 
+-void FunctionMonitor::slotTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++void FunctionMonitor::slotTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb,
+                                             uint64_t pc, bool isStatic, uint64_t staticTarget) {
+     /* We intercept all call and ret translation blocks */
+     if (tb->se_tb_type == TB_CALL || tb->se_tb_type == TB_CALL_IND) {
+diff --git a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.h b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.h
+index 5ab4444..9d41d1c 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.h
++++ b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor.h
+@@ -58,10 +58,10 @@ public:
+     }
+ 
+ protected:
+-    void slotTranslateBlockEnd(ExecutionSignal *, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc, bool,
++    void slotTranslateBlockEnd(ExecutionSignal *, EdgeSignal *, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc, bool,
+                                uint64_t);
+ 
+-    void slotModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, const ModuleDescriptor &module,
++    void slotModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, const ModuleDescriptor &module,
+                                      TranslationBlock *tb, uint64_t pc, bool isStatic, uint64_t staticTarget);
+ 
+     void slotTranslateJumpStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *, uint64_t,
+diff --git a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.cpp b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.cpp
+index f05c07c..86d1b33 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.cpp
++++ b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.cpp
+@@ -29,7 +29,7 @@ void FunctionMonitor2::initialize() {
+     s2e()->getCorePlugin()->onTranslateBlockEnd.connect(sigc::mem_fun(*this, &FunctionMonitor2::onTranslateBlockEnd));
+ }
+ 
+-void FunctionMonitor2::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++void FunctionMonitor2::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2,  S2EExecutionState *state, TranslationBlock *tb,
+                                            uint64_t pc, bool isStatic, uint64_t staticTarget) {
+     if (m_monitor->isKernelAddress(pc)) {
+         return;
+diff --git a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.h b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.h
+index 5b10bcc..d99f53d 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.h
++++ b/src/s2e/Plugins/ExecutionMonitors/FunctionMonitor2.h
+@@ -41,7 +41,7 @@ private:
+     ModuleMap *m_map;
+ 
+     void onFunctionCall(S2EExecutionState *state, uint64_t pc);
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
+                              bool isStatic, uint64_t staticTarget);
+ };
+ 
+diff --git a/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.cpp b/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.cpp
+index 0ed4a34..a5347d9 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.cpp
++++ b/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.cpp
+@@ -128,7 +128,7 @@ void LibraryCallMonitor::logLibraryCall(S2EExecutionState *state, const std::str
+                          << " (pid=" << hexval(pid) << ")\n";
+ }
+ 
+-void LibraryCallMonitor::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++void LibraryCallMonitor::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb,
+                                              uint64_t pc, bool isStatic, uint64_t staticTarget) {
+     // Library calls/jumps are always indirect
+     if (tb->se_tb_type == TB_CALL_IND || (m_monitorIndirectJumps && tb->se_tb_type == TB_JMP_IND)) {
+diff --git a/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.h b/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.h
+index 15b26ec..df608c8 100644
+--- a/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.h
++++ b/src/s2e/Plugins/ExecutionMonitors/LibraryCallMonitor.h
+@@ -80,7 +80,7 @@ private:
+     void logLibraryCall(S2EExecutionState *state, const std::string &callerMod, uint64_t pc, unsigned sourceType,
+                         const std::string &calleeMod, const std::string &function, uint64_t pid) const;
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
+                              bool isStatic, uint64_t staticTarget);
+     void onIndirectCallOrJump(S2EExecutionState *state, uint64_t pc, unsigned sourceType);
+ };
+diff --git a/src/s2e/Plugins/ExecutionTracers/InstructionCounter.cpp b/src/s2e/Plugins/ExecutionTracers/InstructionCounter.cpp
+index c15dcfa..4a489c3 100644
+--- a/src/s2e/Plugins/ExecutionTracers/InstructionCounter.cpp
++++ b/src/s2e/Plugins/ExecutionTracers/InstructionCounter.cpp
+@@ -81,7 +81,7 @@ void InstructionCounter::onTranslateInstructionStart(ExecutionSignal *signal, S2
+     signal->connect(sigc::mem_fun(*this, &InstructionCounter::onTraceInstruction));
+ }
+ 
+-void InstructionCounter::onModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state,
++void InstructionCounter::onModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state,
+                                                    const ModuleDescriptor &module, TranslationBlock *tb, uint64_t endPc,
+                                                    bool staticTarget, uint64_t targetPc) {
+     // TRACE("%"PRIx64" StaticTarget=%d TargetPc=%"PRIx64"\n", endPc, staticTarget, targetPc);
+diff --git a/src/s2e/Plugins/ExecutionTracers/InstructionCounter.h b/src/s2e/Plugins/ExecutionTracers/InstructionCounter.h
+index 4c4e9f9..84ae341 100644
+--- a/src/s2e/Plugins/ExecutionTracers/InstructionCounter.h
++++ b/src/s2e/Plugins/ExecutionTracers/InstructionCounter.h
+@@ -44,7 +44,7 @@ private:
+     void onTranslateInstructionStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
+                                      uint64_t pc);
+ 
+-    void onModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, const ModuleDescriptor &module,
++    void onModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, const ModuleDescriptor &module,
+                                    TranslationBlock *tb, uint64_t endPc, bool staticTarget, uint64_t targetPc);
+ 
+     void onTraceTb(S2EExecutionState *state, uint64_t pc);
+diff --git a/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.cpp b/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.cpp
+index fba6cc5..cc9a9b9 100644
+--- a/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.cpp
++++ b/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.cpp
+@@ -99,7 +99,7 @@ void TranslationBlockTracer::onTranslateBlockStart(ExecutionSignal *signal, S2EE
+     signal->connect(sigc::mem_fun(*this, &TranslationBlockTracer::onExecuteBlockStart));
+ }
+ 
+-void TranslationBlockTracer::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state,
++void TranslationBlockTracer::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state,
+                                                  TranslationBlock *tb, uint64_t endPc, bool staticTarget,
+                                                  uint64_t targetPc) {
+     signal->connect(sigc::mem_fun(*this, &TranslationBlockTracer::onExecuteBlockEnd));
+@@ -111,7 +111,7 @@ void TranslationBlockTracer::onModuleTranslateBlockStart(ExecutionSignal *signal
+     signal->connect(sigc::mem_fun(*this, &TranslationBlockTracer::onExecuteBlockStart));
+ }
+ 
+-void TranslationBlockTracer::onModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state,
++void TranslationBlockTracer::onModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state,
+                                                        const ModuleDescriptor &module, TranslationBlock *tb,
+                                                        uint64_t endPc, bool staticTarget, uint64_t targetPc) {
+     signal->connect(sigc::mem_fun(*this, &TranslationBlockTracer::onExecuteBlockEnd));
+diff --git a/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.h b/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.h
+index 21907f8..2e5ce6a 100644
+--- a/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.h
++++ b/src/s2e/Plugins/ExecutionTracers/TranslationBlockTracer.h
+@@ -47,12 +47,12 @@ private:
+     void onModuleTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, const ModuleDescriptor &module,
+                                      TranslationBlock *tb, uint64_t pc);
+ 
+-    void onModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, const ModuleDescriptor &module,
++    void onModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, const ModuleDescriptor &module,
+                                    TranslationBlock *tb, uint64_t endPc, bool staticTarget, uint64_t targetPc);
+ 
+     void onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc,
+                              bool staticTarget, uint64_t targetPc);
+ 
+     template <typename T> bool getConcolicValue(S2EExecutionState *state, unsigned offset, T *value);
+diff --git a/src/s2e/Plugins/Models/StaticFunctionModels.cpp b/src/s2e/Plugins/Models/StaticFunctionModels.cpp
+index d2e4487..3105168 100644
+--- a/src/s2e/Plugins/Models/StaticFunctionModels.cpp
++++ b/src/s2e/Plugins/Models/StaticFunctionModels.cpp
+@@ -85,7 +85,7 @@ bool StaticFunctionModels::getBool(S2EExecutionState *state, const std::string &
+     return s2e()->getConfig()->getBool(ss.str());
+ }
+ 
+-void StaticFunctionModels::onModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state,
++void StaticFunctionModels::onModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state,
+                                                      const ModuleDescriptor &module, TranslationBlock *tb,
+                                                      uint64_t endPc, bool staticTarget, uint64_t targetPc) {
+     // Only instrument direct calls
+diff --git a/src/s2e/Plugins/Models/StaticFunctionModels.h b/src/s2e/Plugins/Models/StaticFunctionModels.h
+index 94723fc..ee5b35c 100644
+--- a/src/s2e/Plugins/Models/StaticFunctionModels.h
++++ b/src/s2e/Plugins/Models/StaticFunctionModels.h
+@@ -47,7 +47,7 @@ private:
+     ModuleExecutionDetector *m_detector;
+     HandlerMap m_handlers;
+ 
+-    void onModuleTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, const ModuleDescriptor &module,
++    void onModuleTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, const ModuleDescriptor &module,
+                                    TranslationBlock *tb, uint64_t endPc, bool staticTarget, uint64_t targetPc);
+ 
+     bool getBool(S2EExecutionState *state, const std::string &property);
+diff --git a/src/s2e/Plugins/MyPlugins/BranchCoverage.cpp b/src/s2e/Plugins/MyPlugins/BranchCoverage.cpp
+new file mode 100644
+index 0000000..80ab1b7
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/BranchCoverage.cpp
+@@ -0,0 +1,494 @@
++///
++/// Copyright (C) 2018, WZJ
++/// All rights reserved.
++///
++
++#include <s2e/cpu.h>
++#include <s2e/opcodes.h>
++
++#include <boost/regex.hpp>
++#include <s2e/ConfigFile.h>
++#include <s2e/S2E.h>
++#include <s2e/S2EExecutor.h>
++#include <s2e/Utils.h>
++
++#include "BranchCoverage.h"
++
++namespace s2e {
++namespace plugins {
++
++S2E_DEFINE_PLUGIN(BranchCoverage, "Generate branch coverage information.", "BranchCoverage", "MemRangeDetector");
++
++BranchCoverage::BranchCoverage(S2E *s2e) : Plugin(s2e) {
++}
++
++BranchCoverage::~BranchCoverage() {
++    // print uncovered branches
++    /*
++    g_s2e->getDebugStream() << "Uncovered branches: \n";
++    for (auto it = m_uncoveredBranches.cbegin(), end = m_uncoveredBranches.cend(); 
++            it != end; ++it) {
++        Edge e = *it;
++        uint64_t br_pc = e.src;
++        uint64_t target_pc = e.dst;
++        g_s2e->getDebugStream() << hexval(br_pc) << " -> " << hexval(target_pc) << "\n";
++    }
++    int ucount = m_uncoveredBranches.size();
++    int acount = m_allBranches.size();
++    float rate = 0;
++    if (acount != 0) 
++        rate = float(acount - ucount) / acount * 100;
++    g_s2e->getDebugStream() << "Branch coverage rate: " << (acount - ucount) << "/" << acount << " (" << int(rate) << "." << int(rate * 100) % 100 << "%)\n";
++    */
++
++    saveBranchCoverageInfo();
++}
++
++void BranchCoverage::initialize() {
++
++    CorePlugin *core = s2e()->getCorePlugin();
++    core->onTranslateBlockEnd.connect(sigc::mem_fun(*this, &BranchCoverage::onTranslateBlockEnd));
++    core->onCustomInstruction.connect(sigc::mem_fun(*this, &BranchCoverage::onCustomInstruction));
++
++    m_lmon = s2e()->getPlugin<LinuxMonitor>();
++
++    m_memrange = static_cast<MemRangeDetector *>(s2e()->getPlugin("MemRangeDetector"));
++
++    ConfigFile *config = s2e()->getConfig();
++    std::string cfgKey = getConfigKey();
++
++    m_bciFile = config->getString(cfgKey + ".branchCoverageInfoFile");
++
++    m_optParseLoopCountLimit = config->getInt(cfgKey + ".optParseLoopCountLimit");
++
++    //m_optCountLimit = config->getInt(cfgKey + ".optCountLimit");
++
++    m_optWindowCountLimit = config->getInt(cfgKey + ".optWindowCountLimit");
++    m_optMSSCountLimit = config->getInt(cfgKey + ".optMSSCountLimit");
++    m_optTimestampCountLimit = config->getInt(cfgKey + ".optTimestampCountLimit");
++    m_optSACKPermCountLimit = config->getInt(cfgKey + ".optSACKPermCountLimit");
++    m_optSACKCountLimit = config->getInt(cfgKey + ".optSACKCountLimit");
++    m_optFastopenCountLimit = config->getInt(cfgKey + ".optFastopenCountLimit");
++    m_optExpFastopenCountLimit = config->getInt(cfgKey + ".optExpFastopenCountLimit");
++    m_optNopCountLimit = config->getInt(cfgKey + ".optNopCountLimit");
++    m_optEOLCountLimit = config->getInt(cfgKey + ".optEOLCountLimit");
++    m_optOtherCountLimit = config->getInt(cfgKey + ".optOtherCountLimit");
++
++    m_optWindowEdgeSrc = config->getInt(cfgKey + ".optWindowEdgeSrc");
++    m_optWindowEdgeDst = config->getInt(cfgKey + ".optWindowEdgeDst");
++    m_optMSSEdgeSrc = config->getInt(cfgKey + ".optMSSEdgeSrc");
++    m_optMSSEdgeDst = config->getInt(cfgKey + ".optMSSEdgeDst");
++    m_optTimestampEdgeSrc = config->getInt(cfgKey + ".optTimestampEdgeSrc");
++    m_optTimestampEdgeDst = config->getInt(cfgKey + ".optTimestampEdgeDst");
++    m_optSACKPermEdgeSrc = config->getInt(cfgKey + ".optSACKPermEdgeSrc");
++    m_optSACKPermEdgeDst = config->getInt(cfgKey + ".optSACKPermEdgeDst");
++    m_optSACKEdgeSrc = config->getInt(cfgKey + ".optSACKEdgeSrc");
++    m_optSACKEdgeDst = config->getInt(cfgKey + ".optSACKEdgeDst");
++    m_optFastopenEdgeSrc = config->getInt(cfgKey + ".optFastopenEdgeSrc");
++    m_optFastopenEdgeDst = config->getInt(cfgKey + ".optFastopenEdgeDst");
++    m_optExpFastopenEdgeSrc = config->getInt(cfgKey + ".optExpFastopenEdgeSrc");
++    m_optExpFastopenEdgeDst = config->getInt(cfgKey + ".optExpFastopenEdgeDst");
++    m_optNopEdgeSrc = config->getInt(cfgKey + ".optNopEdgeSrc");
++    m_optNopEdgeDst = config->getInt(cfgKey + ".optNopEdgeDst");
++    m_optEOLEdgeSrc = config->getInt(cfgKey + ".optEOLEdgeSrc");
++    m_optEOLEdgeDst = config->getInt(cfgKey + ".optEOLEdgeDst");
++
++    //s2e()->getCorePlugin()->onStateForkDecide.connect(sigc::mem_fun(*this, &BranchCoverage::onStateForkDecide));
++
++    // load global branch coverage info. cumulate branch coverage info
++    //loadBranchCoverageInfo();
++
++    // load critical branches
++    std::vector<std::string> sections = config->getListKeys(cfgKey + ".CriticalBranches");
++    foreach2 (it, sections.begin(), sections.end()) {
++        uint64_t dp = stoull(*it, 0, 16);
++        g_s2e->getDebugStream() << dp << "\n";
++
++        ConfigFile::string_list edges = config->getStringList(cfgKey + ".CriticalBranches." + *it);
++        for (std::string edge : edges) {
++            size_t pos = edge.find(':');
++            uint64_t src = stoull(edge.substr(0, pos), NULL, 16);
++            uint64_t dst = stoull(edge.substr(pos + 1), NULL, 16);
++            getDebugStream() << hexval(src) << "->" << hexval(dst) << "\n";
++            m_criticalBranches[Edge(src, dst)].insert(dp);
++        }
++    }
++
++}
++
++void BranchCoverage::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, 
++                                         uint64_t endPc, bool staticTarget, uint64_t targetPc) {
++    assert(tb->pcOfLastInstr == endPc);
++
++    DECLARE_PLUGINSTATE(BranchCoverageState, state);
++    if (plgState->isTracingEnabled()) {
++        if (m_memrange->isInRange(endPc) || m_memrange->isInRange(targetPc)) {
++            //getDebugStream(state) << "onTranslateBlockEnd. " << hexval(endPc) << " -> " << hexval(targetPc) << "\n";
++            signal2->connect(sigc::mem_fun(*this, &BranchCoverage::onExecuteEdge));
++    
++            // log all the branches
++            if (m_allBranches.insert(Edge(endPc, targetPc)).second) {
++                // init uncovered branches
++                m_uncoveredBranches.insert(Edge(endPc, targetPc));
++            }
++        }
++    }
++}
++
++void BranchCoverage::resetTCPOptCounters(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(BranchCoverageState, state);
++
++    plgState->resetCounters();
++}
++
++void BranchCoverage::onTCPOption(S2EExecutionState *state, bool optFound, int &optCount, int optCountLimit) {
++    if (optCount == -1) {
++        optCount = 0;
++    }
++    if (optFound) {
++        optCount++;
++        //if (optCount == 0 || optCount > optCountLimit) {  // use optCount == 0 to bound the order of the TCP options
++        if (optCount > optCountLimit) {
++            // terminate state
++            getDebugStream(state) << "optCount = " << optCount << ". Killed state.\n";
++            s2e()->getExecutor()->terminateStateAtFork(*state);
++            state->zombify();
++
++            // Killed current state
++            if (state == g_s2e_state) {
++                state->regs()->write<int>(CPU_OFFSET(exception_index), EXCP_SE);
++                throw CpuExitException();
++            }
++        }
++    } else {
++        // code removed
++    }
++}
++
++void BranchCoverage::onExecuteEdge(S2EExecutionState *state, uint64_t pc, uint64_t nextpc) {
++    DECLARE_PLUGINSTATE(BranchCoverageState, state);
++    if (plgState->isTracingEnabled()) {
++        getDebugStream(state) << "onExecute. " << hexval(pc) << " -> " << hexval(nextpc) << "\n";
++        plgState->m_coveredBranches[Edge(pc, nextpc)]++;
++        m_uncoveredBranches.erase(Edge(pc, nextpc));
++        
++        if (pc == 0xffffffff8177d6f2 && nextpc == 0xffffffff8177d6f4) {
++            if (m_optParseLoopCountLimit == 0) {
++                getDebugStream(state) << "Loop count reached " << m_optParseLoopCountLimit << ". Killed state.\n";
++                s2e()->getExecutor()->terminateStateAtFork(*state);
++                state->zombify();
++
++                // Killed current state
++                if (state == g_s2e_state) {
++                    state->regs()->write<int>(CPU_OFFSET(exception_index), EXCP_SE);
++                    throw CpuExitException();
++                }
++            }
++        }
++        else if (pc == 0xffffffff8177d703 && nextpc == 0xffffffff8177d6ed) {
++            plgState->m_loopParseOptionsCount++;
++            if (plgState->m_loopParseOptionsCount >= m_optParseLoopCountLimit) {
++                getDebugStream(state) << "Loop count reached " << m_optParseLoopCountLimit << ". Killed state.\n";
++                s2e()->getExecutor()->terminateStateAtFork(*state);
++                state->zombify();
++
++                // Killed current state
++                if (state == g_s2e_state) {
++                    state->regs()->write<int>(CPU_OFFSET(exception_index), EXCP_SE);
++                    throw CpuExitException();
++                }
++            }
++        }
++        else if (pc == 0xffffffff8177d73f && nextpc == 0xffffffff8177d745) {
++            // invalid TCP option
++            onTCPOption(state, true, plgState->m_optOtherCount, m_optOtherCountLimit);
++            getDebugStream(state) << "Invalid TCP option. optOtherCount: " << plgState->m_optOtherCount << "\n";
++        }
++        else if (pc == m_optWindowEdgeSrc) {
++            if (nextpc == m_optWindowEdgeDst) {
++                onTCPOption(state, true, plgState->m_optWindowCount, m_optWindowCountLimit);
++                getDebugStream(state) << "Found TCP Option Window. optWindowCount: " << plgState->m_optWindowCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optWindowCount, m_optWindowCountLimit);
++        } 
++        else if (pc == m_optMSSEdgeSrc) {
++            if (nextpc == m_optMSSEdgeDst) {
++                onTCPOption(state, true, plgState->m_optMSSCount, m_optMSSCountLimit);
++                getDebugStream(state) << "Found TCP Option MSS. optMSSCount: " << plgState->m_optMSSCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optMSSCount, m_optMSSCountLimit);
++        }
++        else if (pc == m_optTimestampEdgeSrc) {
++            if (nextpc == m_optTimestampEdgeDst) {
++                onTCPOption(state, true, plgState->m_optTimestampCount, m_optTimestampCountLimit);
++                getDebugStream(state) << "Found TCP Option Timestamp. optTimestampCount: " << plgState->m_optTimestampCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optTimestampCount, m_optTimestampCountLimit);
++        } 
++        else if (pc == m_optSACKPermEdgeSrc) {
++            if (nextpc == m_optSACKPermEdgeDst) {
++                onTCPOption(state, true, plgState->m_optSACKPermCount, m_optSACKPermCountLimit);
++                getDebugStream(state) << "Found TCP Option SACKPerm. optSACKPermCount: " << plgState->m_optSACKPermCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optSACKPermCount, m_optSACKPermCountLimit);
++        }
++        else if (pc == m_optSACKEdgeSrc) {
++            if (nextpc == m_optSACKEdgeDst) {
++                onTCPOption(state, true, plgState->m_optSACKCount, m_optSACKCountLimit);
++                getDebugStream(state) << "Found TCP Option SACK. optSACKCount: " << plgState->m_optSACKCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optSACKCount, m_optSACKCountLimit);
++        }
++        else if (pc == m_optFastopenEdgeSrc) {
++            if (nextpc == m_optFastopenEdgeDst) {
++                onTCPOption(state, true, plgState->m_optFastopenCount, m_optFastopenCountLimit);
++                getDebugStream(state) << "Found TCP Option Fastopen. optFastopenCount: " << plgState->m_optFastopenCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optFastopenCount, m_optFastopenCountLimit);
++        }
++        else if (pc == m_optExpFastopenEdgeSrc) {
++            if (nextpc == m_optExpFastopenEdgeDst) {
++                onTCPOption(state, true, plgState->m_optExpFastopenCount, m_optExpFastopenCountLimit);
++                getDebugStream(state) << "Found TCP Option ExpFastopen. optExpFastopenCount: " << plgState->m_optExpFastopenCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optExpFastopenCount, m_optExpFastopenCountLimit);
++        }
++        else if (pc == m_optNopEdgeSrc) {
++            if (nextpc == m_optNopEdgeDst) {
++                onTCPOption(state, true, plgState->m_optNopCount, m_optNopCountLimit);
++                getDebugStream(state) << "Found TCP Option Nop. optNopCount: " << plgState->m_optNopCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optNopCount, m_optNopCountLimit);
++        }
++        else if (pc == m_optEOLEdgeSrc) {
++            if (nextpc == m_optEOLEdgeDst) {
++                onTCPOption(state, true, plgState->m_optEOLCount, m_optEOLCountLimit);
++                getDebugStream(state) << "Found TCP Option EOL. optEOLCount: " << plgState->m_optEOLCount << "\n";
++            }
++            else
++                onTCPOption(state, false, plgState->m_optEOLCount, m_optEOLCountLimit);
++        }
++
++    }
++}
++
++void BranchCoverage::onStateForkDecide(S2EExecutionState *state, bool *doFork) {
++    /*
++    DECLARE_PLUGINSTATE(BranchCoverageState, state);
++    uint64_t pc = state->regs()->getPc();
++
++    if (pc == m_optWindowEdgeSrc) {
++        if (plgState->m_optWindowCount == 0 || plgState->m_optWindowCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optMSSEdgeSrc) {
++        if (plgState->m_optMSSCount == 0 || plgState->m_optMSSCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optTimestampEdgeSrc) {
++        if (plgState->m_optTimestampCount == 0 || plgState->m_optTimestampCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optSACKPermEdgeSrc) {
++        if (plgState->m_optSACKPermCount == 0 || plgState->m_optSACKPermCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optSACKEdgeSrc) {
++        if (plgState->m_optSACKCount == 0 || plgState->m_optSACKCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optFastopenEdgeSrc) {
++        if (plgState->m_optFastopenCount == 0 || plgState->m_optFastopenCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optExpFastopenEdgeSrc) {
++        if (plgState->m_optExpFastopenCount == 0 || plgState->m_optExpFastopenCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optNopEdgeSrc) {
++        if (plgState->m_optNopCount == 0 || plgState->m_optNopCount >= 2)
++            *doFork = false;
++    }
++    else if (pc == m_optEOLEdgeSrc) {
++        if (plgState->m_optEOLCount == 0 || plgState->m_optEOLCount >= 2)
++            *doFork = false;
++    }
++
++    */
++}
++
++void BranchCoverage::enableTracing(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(BranchCoverageState, state);
++    plgState->enableTracing();
++}
++
++void BranchCoverage::disableTracing(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(BranchCoverageState, state);
++    plgState->disableTracing();
++}
++
++void BranchCoverage::onCustomInstruction(S2EExecutionState *state, uint64_t opcode) {
++    // XXX: find a better way of allocating custom opcodes
++    if (!OPCODE_CHECK(opcode, BRANCHCOVERAGE_OPCODE)) {
++        return;
++    }
++
++    // XXX: remove this mess. Should have a function for extracting
++    // info from opcodes.
++    opcode >>= 16;
++    uint8_t op = opcode & 0xFF;
++    opcode >>= 8;
++
++    BranchCoverageOpcodes opc = (BranchCoverageOpcodes) op;
++    switch (opc) {
++        // Pick the next state specified by the EAX register
++        case Enable: {
++            enableTracing(state);
++            break;
++        }
++        case Disable: {
++            disableTracing(state);
++            break;
++        }
++    }
++}
++
++void BranchCoverage::saveBranchCoverageInfo() {
++    std::ofstream ofs(m_bciFile);
++    if (ofs.good()) {
++        ofs << "------all branches------\n";
++        for (auto it = m_allBranches.cbegin(), end = m_allBranches.cend(); 
++                it != end; ++it) {
++            Edge e = *it;
++            uint64_t br_pc = e.src;
++            uint64_t target_pc = e.dst;
++            ofs << hexval(br_pc) << ":" << hexval(target_pc) << "\n";
++        }
++        ofs << "------uncovered branches------\n";
++        for (auto it = m_uncoveredBranches.cbegin(), end = m_uncoveredBranches.cend(); 
++                it != end; ++it) {
++            Edge e = *it;
++            uint64_t br_pc = e.src;
++            uint64_t target_pc = e.dst;
++            ofs << hexval(br_pc) << ":" << hexval(target_pc) << "\n";
++        }
++    } else {
++        getWarningsStream() << "Failed to open file: " << m_bciFile << "\n";
++    }
++}
++
++void BranchCoverage::loadBranchCoverageInfo() {
++    char line[256];
++    std::ifstream ifs(m_bciFile);
++    if (ifs.good()) {
++        ifs.getline(line, 255);
++        for (;;) {
++            ifs.getline(line, 255);
++            if (line[0] == '-') // reach the uncovered branch section
++                break;
++            char *tmp = line;
++            uint64_t br_pc = strtoull(tmp, &tmp, 16);
++            uint64_t target_pc = strtoull(tmp+1, &tmp, 16);
++            m_allBranches.insert(Edge(br_pc, target_pc));
++        }
++        for (;;) {
++            ifs.getline(line, 255);
++            if (line[0] == 0) // reach the end
++                break;
++            char *tmp = line;
++            uint64_t br_pc = strtoull(line, &tmp, 16);
++            uint64_t target_pc = strtoull(tmp+1, &tmp, 16);
++            m_uncoveredBranches.insert(Edge(br_pc, target_pc));
++        }
++    } else {
++        getWarningsStream() << "Failed to open file: " << m_bciFile << "\n";
++    }
++}
++
++/*
++ *
++ */
++
++BranchCoverageState::BranchCoverageState() {
++    m_forkCount = 0;
++    m_nextBr = 0;
++
++    m_lastBrPc = 0;
++    
++    m_step = 0;
++
++    m_enabled = false;
++
++    resetCounters();
++}
++
++BranchCoverageState::~BranchCoverageState() {
++    //dumpCoverage();
++}
++
++void BranchCoverageState::resetCounters() {
++    m_loopParseOptionsCount = 0;
++    m_optWindowCount = -1;
++    m_optMSSCount = -1;
++    m_optTimestampCount = -1;
++    m_optSACKPermCount = -1;
++    m_optSACKCount = -1;
++    m_optFastopenCount = -1;
++    m_optExpFastopenCount = -1;
++    m_optNopCount = -1;
++    m_optEOLCount = -1;
++    m_optOtherCount = -1;
++}
++
++BranchCoverageState *BranchCoverageState::clone() const {
++    return new BranchCoverageState(*this);
++}
++
++PluginState *BranchCoverageState::factory(Plugin *p, S2EExecutionState *s) {
++    return new BranchCoverageState();
++}
++
++void BranchCoverageState::increaseForkCount() {
++    m_forkCount++;
++}
++
++unsigned BranchCoverageState::getForkCount() const {
++    return m_forkCount;
++}
++
++void BranchCoverageState::dumpCoverage() {
++    // print uncovered branches
++    g_s2e->getDebugStream() << "State covered branches: \n";
++    for (auto it = m_coveredBranches.cbegin(), end = m_coveredBranches.cend(); 
++            it != end; ++it) {
++        Edge e = it->first;
++        int count = it->second;
++        uint64_t br_pc = e.src;
++        uint64_t target_pc = e.dst;
++        g_s2e->getDebugStream() << hexval(br_pc) << " -> " << hexval(target_pc) << ": " << count << "\n";
++    }
++}
++
++void BranchCoverageState::dumpCoverage(S2EExecutionState *state) {
++    // print uncovered branches
++    g_s2e->getDebugStream(state) << "State covered branches: \n";
++    for (auto it = m_coveredBranches.cbegin(), end = m_coveredBranches.cend(); 
++            it != end; ++it) {
++        Edge e = it->first;
++        int count = it->second;
++        uint64_t br_pc = e.src;
++        uint64_t target_pc = e.dst;
++        g_s2e->getDebugStream(state) << hexval(br_pc) << " -> " << hexval(target_pc) << ": " << count << "\n";
++    }
++}
++
++} // namespace plugins
++} // namespace s2e
+diff --git a/src/s2e/Plugins/MyPlugins/BranchCoverage.h b/src/s2e/Plugins/MyPlugins/BranchCoverage.h
+new file mode 100644
+index 0000000..6c8f1c0
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/BranchCoverage.h
+@@ -0,0 +1,200 @@
++///
++/// Copyright (C) 2015, Dependable Systems Laboratory, EPFL
++/// Copyright (C) 2016, Cyberhaven
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#ifndef S2E_PLUGINS_BranchCoverage_H_
++#define S2E_PLUGINS_BranchCoverage_H_
++
++#include <klee/Searcher.h>
++#include <s2e/CorePlugin.h>
++#include <s2e/Plugin.h>
++#include <s2e/Plugins/OSMonitors/Linux/LinuxMonitor.h>
++#include <s2e/Plugins/MyPlugins/MemRangeDetector.h>
++#include <s2e/S2EExecutionState.h>
++
++#include <unordered_map>
++#include <unordered_set>
++
++
++namespace s2e {
++namespace plugins {
++    
++class Edge {
++public:
++    uint64_t src;
++    uint64_t dst;
++
++    Edge(uint64_t src_, uint64_t dst_) : src(src_), dst(dst_) {}
++
++    bool operator==(const Edge &other) const {
++        return src == other.src && dst == other.dst;
++    }
++};
++
++} // namespace plugins
++} // namespace s2e
++
++namespace std {
++    template<>
++    struct hash<s2e::plugins::Edge> {
++        size_t operator()(const s2e::plugins::Edge &e) const {
++            return hash<uint64_t>()(e.src) ^ (hash<uint64_t>()(e.dst) << 1);
++        }
++    };
++}
++
++namespace s2e {
++namespace plugins {
++
++#define BRANCHCOVERAGE_OPCODE 0xAE
++
++class BranchCoverage : public Plugin { //, public klee::Searcher {
++    S2E_PLUGIN
++public:
++    enum BranchCoverageOpcodes {
++        Disable = 0,
++        Enable = 1,
++    };
++
++private:
++    LinuxMonitor *m_lmon;
++    MemRangeDetector *m_memrange;
++
++    std::string m_bciFile;
++
++    int m_optParseLoopCountLimit;
++
++    typedef std::set<S2EExecutionState *> StateSet;
++
++    StateSet m_states;
++
++    std::unordered_set<Edge> m_allBranches;
++    std::unordered_set<Edge> m_uncoveredBranches;
++
++    std::unordered_map<Edge, std::unordered_set<uint64_t>> m_criticalBranches;
++
++    int m_optCountLimit;
++
++    int m_optWindowCountLimit;
++    int m_optMSSCountLimit;
++    int m_optTimestampCountLimit;
++    int m_optSACKPermCountLimit;
++    int m_optSACKCountLimit;
++    int m_optFastopenCountLimit;
++    int m_optExpFastopenCountLimit;
++    int m_optNopCountLimit;
++    int m_optEOLCountLimit;
++    int m_optOtherCountLimit;
++
++    uint64_t m_optWindowEdgeSrc;
++    uint64_t m_optWindowEdgeDst;
++    uint64_t m_optMSSEdgeSrc;
++    uint64_t m_optMSSEdgeDst;
++    uint64_t m_optTimestampEdgeSrc;
++    uint64_t m_optTimestampEdgeDst;
++    uint64_t m_optSACKPermEdgeSrc;
++    uint64_t m_optSACKPermEdgeDst;
++    uint64_t m_optSACKEdgeSrc;
++    uint64_t m_optSACKEdgeDst;
++    uint64_t m_optFastopenEdgeSrc;
++    uint64_t m_optFastopenEdgeDst;
++    uint64_t m_optExpFastopenEdgeSrc;
++    uint64_t m_optExpFastopenEdgeDst;
++    uint64_t m_optNopEdgeSrc;
++    uint64_t m_optNopEdgeDst;
++    uint64_t m_optEOLEdgeSrc;
++    uint64_t m_optEOLEdgeDst;
++    
++    void onTranslateInstruction(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onInstructionExecution(S2EExecutionState *state, uint64_t pc);
++    void onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onExecuteBlockStart(S2EExecutionState *state, uint64_t pc);
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc, bool staticTarget, uint64_t targetPc);
++    void onExecuteEdge(S2EExecutionState *state, uint64_t pc, uint64_t nextpc);
++    void onTCPOption(S2EExecutionState *state, bool optFound, int &optCount, int optCountLimit);
++
++    void onStateForkDecide(S2EExecutionState *state, bool *doFork);
++
++    void onCustomInstruction(S2EExecutionState *state, uint64_t opcode);
++
++    void saveBranchCoverageInfo();
++    void loadBranchCoverageInfo();
++
++public:
++    BranchCoverage(S2E *s2e);
++    ~BranchCoverage();
++    void initialize();
++
++    void enableTracing(S2EExecutionState *state);
++    void disableTracing(S2EExecutionState *state);
++
++    void resetTCPOptCounters(S2EExecutionState *state);
++
++    //virtual klee::ExecutionState &selectState();
++    //virtual void update(klee::ExecutionState *current, const klee::StateSet &addedStates,
++    //                    const klee::StateSet &removedStates);
++    //virtual bool empty();
++};
++
++class BranchCoverageState : public PluginState {
++private:
++    unsigned m_forkCount;
++    unsigned m_nextBr;  // next branch
++
++    uint64_t m_lastBrPc; // last branch instruction pc
++
++    unsigned m_step;  // current step
++
++    bool m_enabled; // whether directed symbolic execution enabled on this state
++
++public:
++    std::unordered_map<Edge, int> m_coveredBranches; // branch_pc, target_pc
++
++    int m_loopParseOptionsCount;
++    int m_optWindowCount;
++    int m_optMSSCount;
++    int m_optTimestampCount;
++    int m_optSACKPermCount;
++    int m_optSACKCount;
++    int m_optFastopenCount;
++    int m_optExpFastopenCount;
++    int m_optNopCount;
++    int m_optEOLCount;
++    int m_optOtherCount;
++
++public:
++    BranchCoverageState();
++    virtual ~BranchCoverageState();
++
++    virtual BranchCoverageState *clone() const;
++    static PluginState *factory(Plugin *p, S2EExecutionState *s);
++
++    void increaseForkCount();
++    unsigned getForkCount() const;
++
++    uint64_t getLastBr() {
++        return m_lastBrPc;
++    }
++
++    void setLastBr(uint64_t pc) {
++        m_lastBrPc = pc;
++    }
++    
++    bool isTracingEnabled() { return m_enabled; }
++    void enableTracing() { m_enabled = true; }
++    void disableTracing() { m_enabled = false; }
++
++    void dumpCoverage(S2EExecutionState *state);
++    void dumpCoverage();
++
++    void resetCounters();
++};
++
++} // namespace plugins
++} // namespace s2e
++
++#endif /* S2E_PLUGINS_BranchCoverage_H_ */
+diff --git a/src/s2e/Plugins/MyPlugins/BranchDirector.cpp b/src/s2e/Plugins/MyPlugins/BranchDirector.cpp
+new file mode 100644
+index 0000000..a5c63b5
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/BranchDirector.cpp
+@@ -0,0 +1,580 @@
++///
++/// Copyright (C) 2018, WZJ
++/// All rights reserved.
++///
++
++#include <s2e/cpu.h>
++#include <s2e/opcodes.h>
++
++#include <boost/regex.hpp>
++#include <s2e/ConfigFile.h>
++#include <s2e/S2E.h>
++#include <s2e/S2EExecutor.h>
++#include <s2e/Utils.h>
++
++#include "BranchDirector.h"
++
++namespace s2e {
++namespace plugins {
++
++S2E_DEFINE_PLUGIN(BranchDirector, "Choose branches that lead to desired state", "BranchDirector");
++
++BranchDirector::BranchDirector(S2E *s2e) : Plugin(s2e) {
++    m_chosenState = NULL;
++}
++
++BranchDirector::~BranchDirector() {
++    // print uncovered branches
++    /*
++    g_s2e->getDebugStream() << "Uncovered branches: \n";
++    for (auto it = m_uncoveredBranches.cbegin(), end = m_uncoveredBranches.cend(); 
++            it != end; ++it) {
++        auto pc_pair = get_pc_pair(*it);
++        uint64_t br_pc = pc_pair.first;
++        uint64_t target_pc = pc_pair.second;
++        // exclude those in the blacklist
++        auto it2 = m_brBlacklist.find(br_pc);
++        if (it2 != m_brBlacklist.end() && (target_pc == it2->second || it2->second == 0)) {
++            continue;
++        }
++        // there could be 2 possible cases:
++        // 1. infeasible
++        // 2. dependence
++        g_s2e->getDebugStream() << hexval(br_pc) << " -> " << hexval(target_pc) << "\n";
++    }
++    */
++}
++
++bool BranchDirector::loadBlacklist(const std::string &path) {
++    std::unordered_map<uint64_t, std::vector<uint64_t>> brBlacklist;
++    std::string line;
++
++    // Load branch directors
++    std::ifstream file(path.c_str(), std::ios::in);
++    if (!file.is_open()) {
++        getWarningsStream() << "failed to open file \"" << path << "\"\n";
++        return false;
++    }
++
++    const boost::regex taRegex("target = ([[:xdigit:]]+)");
++    const boost::regex pRegex("(.*) from ([[:xdigit:]]+) to ([[:xdigit:]]+)");
++    const boost::regex brRegex("([[:xdigit:]]+): ?([[:xdigit:] ]*)");
++
++    boost::smatch match;
++    char *p;
++
++    // first line is the target address
++    std::getline(file, line);
++    if (!boost::regex_match(line, match, taRegex)) {
++        getWarningsStream() << "ERROR: the first line of " << path << " does not contain target address.\n";
++        exit(-1);
++    }
++    uint64_t targetAddr = strtoull(((std::string) match[1]).c_str(), &p, 16);
++
++    while (std::getline(file, line)) {
++        if (line.length() > 0) {
++            if (boost::regex_match(line, match, pRegex)) {
++                // FIXME: follow call chain
++                //getWarningsStream() << line << "\n";
++
++                //Director director;
++                //director.functionName = match[1];
++                //director.startPc = strtoull(((std::string) match[2]).c_str(), &p, 16);
++                //assert(*p == '\0');
++                //director.endPc = strtoull(((std::string) match[3]).c_str(), &p, 16);
++                //assert(*p == '\0');
++
++                //getWarningsStream() << director.functionName << "," << hexval(director.startPc) 
++                //                    << "," << hexval(director.endPc) << "\n";
++                //m_directors.push_back(director);
++
++            } else if (boost::regex_match(line, match, brRegex)) {
++                //getWarningsStream() << line << "\n";
++
++                assert(match.size() == 3);
++
++                uint64_t brPc = strtoull(((std::string) match[1]).c_str(), &p, 16);
++                assert(*p == '\0');
++
++                //std::stringstream ss;
++                //ss << hexval(brPc) << ":";
++
++                std::string nextPcs = match[2];
++                std::vector<uint64_t> vecNextPcs;
++                uint64_t nextPc = strtoull(nextPcs.c_str(), &p, 16);
++                vecNextPcs.push_back(nextPc);
++                //ss << " " <<  hexval(nextPc);
++                while (*p != '\0') {
++                    nextPc = strtoull(p, &p, 16);
++                    vecNextPcs.push_back(nextPc);
++                    //ss << " " << hexval(nextPc);
++                }
++                //getWarningsStream() << ss.str() << "\n";
++
++                //assert(m_directors.size() > 0);
++                //Director &director = m_directors.back();
++                //director.brDirectors.insert(std::make_pair(brPc, nextPc));
++                brBlacklist.insert(std::make_pair(brPc, vecNextPcs));
++            }
++        } 
++    }
++    m_targetAddrs.push_back(targetAddr);
++    m_blacklists.push_back(brBlacklist);
++    return true;
++}
++
++void BranchDirector::loadBlacklists(const std::string &folder) {
++    // directors should follow the naming convention: director1.txt, director2.txt, ...
++    const int max_num_of_directors = 10;
++    int i;
++    for (i = 1; i <= max_num_of_directors; i++) {
++        std::stringstream ss;
++        ss << folder << "/director" << i << ".txt";
++        std::string directorFile = ss.str();
++        if (loadBlacklist(directorFile)) {
++            g_s2e->getDebugStream() << "Branch director file loaded. " << directorFile << "\n";
++        } else {
++            break;
++        }
++    }
++    g_s2e->getDebugStream() << (i - 1) << " branch director loaded.\n";
++    assert(i > 1 && "At least 1 branch director should be loaded.");
++}
++
++void BranchDirector::initialize() {
++    //s2e()->getExecutor()->setSearcher(this);
++
++    CorePlugin *core = s2e()->getCorePlugin();
++    //core->onMyStateFork.connect_front(sigc::mem_fun(*this, &BranchDirector::onFork));
++    core->onTranslateInstructionStart.connect(sigc::mem_fun(*this, &BranchDirector::onTranslateInstruction));
++    core->onTranslateBlockStart.connect(sigc::mem_fun(*this, &BranchDirector::onTranslateBlockStart));
++    core->onTranslateBlockEnd.connect(sigc::mem_fun(*this, &BranchDirector::onTranslateBlockEnd));
++    core->onCustomInstruction.connect(sigc::mem_fun(*this, &BranchDirector::onCustomInstruction));
++
++    ConfigFile *config = s2e()->getConfig();
++
++    const std::string directorFileFolder = config->getString(getConfigKey() + ".directorFileFolder", "");
++
++    loadBlacklists(directorFileFolder);
++}
++
++/*
++ *
++ */
++
++void BranchDirector::onTranslateInstruction(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++                                          uint64_t pc) {
++    for (int i = 0; i < m_targetAddrs.size(); i++) {
++        if (pc == m_targetAddrs[i]) {
++            signal->connect(sigc::mem_fun(*this, &BranchDirector::onInstructionExecution));
++        }
++    }
++}
++
++void BranchDirector::onInstructionExecution(S2EExecutionState *state, uint64_t pc) {
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    if (plgState->isDSEEnabled()) {
++        getWarningsStream(state) << "reached target PC " << hexval(pc) << ", step " << plgState->getStep() + 1 << "\n";
++        plgState->setReached();
++        plgState->disableDSE();
++        plgState->increaseStep();
++        if (plgState->getStep() >= m_targetAddrs.size()) {
++            // this is the last step
++            // terminate all states except current state
++            /*
++            for (auto st : s2e()->getExecutor()->getStates()) {
++                if (st != state) {
++                    S2EExecutionState *s2est = static_cast<S2EExecutionState *>(st);
++                    s2e()->getExecutor()->terminateStateAtFork(*s2est);
++                }
++            }
++            */
++            // terminate current state
++            s2e()->getExecutor()->terminateStateEarly(*state, "reached target PC");
++        }
++    }
++}
++
++void BranchDirector::onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, 
++                                         uint64_t pc) {
++    //getDebugStream(state) << "onTranslateBlockStart. pc = " << hexval(pc) << ".\n";
++
++//    auto it = m_brNextPcs.find(pc);
++//    if (it != m_brNextPcs.end()) {
++        // instrument block starts that are connected to instrumented branches (branches with directors)
++    if (pc >= 0xc1756750 && pc <= 0xc1cdaa41) {
++        signal->connect(sigc::mem_fun(*this, &BranchDirector::onExecuteBlockStart));
++    }
++//    }
++}
++
++void BranchDirector::onExecuteBlockStart(S2EExecutionState *state, uint64_t pc) {
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    if (plgState->isDSEEnabled()) {
++        getDebugStream(state) << "[BD] execute translation block start pc = " << hexval(pc) << "\n";
++
++        // log the covered TB
++        TranslationBlock *tb = state->getTb();
++        assert(tb->pc == pc && "PC does not match!");
++        plgState->m_coveredTBs.insert(make_pc_pair(tb->pc, tb->pcOfLastInstr));
++
++        // log the covered branch
++        uint64_t lastBrPc = plgState->getLastBr();
++        //assert(lastBrPc != 0);
++        if (lastBrPc != 0) {
++            getDebugStream(state) << "[BD] execute branch: " << hexval(lastBrPc) << " -> " << hexval(pc) << "\n"; 
++            plgState->m_coveredBranches.insert(make_pc_pair(lastBrPc, pc));
++            m_uncoveredBranches.erase(make_pc_pair(lastBrPc, pc));
++
++            unsigned currStep = plgState->getStep();
++            if (currStep < m_blacklists.size()) {
++                auto it = m_blacklists[currStep].find(lastBrPc);
++                if (it != m_blacklists[currStep].end()) {
++                    std::vector<uint64_t> blackPcs = it->second;
++                    std::stringstream ss;
++                    ss << "[BD] Branch should be avoided:";
++                    bool isBlack = false;
++                    for (uint64_t blackPc : blackPcs) {
++                        ss << " " << hexval(blackPc);
++                        if (pc == blackPc) {
++                            isBlack = true;
++                            break;
++                        }
++                    } 
++                    ss << ", actual branch taken: " << hexval(pc) << (isBlack ? " (No)" : " (Yes)");
++                    getDebugStream(state) << ss.str() << "\n";
++                    if (isBlack) {
++                        // goes to the wrong branch, terminate the state
++                        // the state could be already terminated, but due to concrete execution, S2E has not yet switch to another state
++                        getWarningsStream(state) << "[BD] Terminate the state due to wrong branch taken.\n";
++                        s2e()->getExecutor()->terminateStateAtFork(*state);
++                        state->zombify();
++                        
++                        // Killed current state
++                        if (state == g_s2e_state) {
++                            state->regs()->write<int>(CPU_OFFSET(exception_index), EXCP_SE);
++                            throw CpuExitException();
++                        }
++                    } 
++                }
++            }
++
++            // clear the branch pc
++            plgState->setLastBr(0);
++            //getDebugStream(state) << "[BD] Clear last br pc.\n";
++        }
++    }
++#if 0
++    getDebugStream(state) << "execute translation block (of interests) start pc = " << hexval(pc) << "\n";
++
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    uint64_t lastBrPc = plgState->getLastBr();
++    //assert(lastBrPc != 0);
++    
++    if (lastBrPc != 0) {
++        getDebugStream(state) << "[BD] Branch pc: " << hexval(lastBrPc) << "\n"; 
++        auto it = m_brDirectors.find(lastBrPc);
++        assert(it != m_brDirectors.end());
++        uint64_t nextPc = it->second;
++        getDebugStream(state) << "[BD] Branch should be taken: " << hexval(nextPc) 
++                              << ", actual branch taken: " << hexval(pc) << " (" << (pc == nextPc ? "Yes" : "No") << ")\n";
++
++        if (pc != nextPc) {
++            // goes to the wrong branch, terminate the state
++            // the state could be already terminated, but due to concrete execution, S2E has not yet switch to another state
++            getWarningsStream(state) << "[BD] Terminate the state due to wrong branch taken.\n";
++            s2e()->getExecutor()->terminateStateAtFork(*state);
++            state->zombify();
++        }
++
++        // clear the branch pc
++        plgState->setLastBr(0);
++        //getDebugStream(state) << "[BD] Clear last br pc.\n";
++    }
++#endif
++}
++
++void BranchDirector::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, 
++                                         uint64_t endPc, bool staticTarget, uint64_t targetPc) {
++    //getDebugStream(state) << "onTranslateBlockEnd. endPc = " << hexval(endPc) << ", targetPc = " << hexval(targetPc) << ".\n";
++    assert(tb->pcOfLastInstr == endPc);
++    if (endPc >= 0xc1756750 && endPc <= 0xc1cdaa41 && targetPc >= 0xc1756750 && targetPc <= 0xc1cdaa41) {
++        signal->connect(sigc::mem_fun(*this, &BranchDirector::onExecuteBlockEnd));
++
++        // log all the branches
++        if (m_allBranches.insert(make_pc_pair(endPc, targetPc)).second) {
++            // init uncovered branches
++            m_uncoveredBranches.insert(make_pc_pair(endPc, targetPc));
++        }
++    }
++    
++#if 0
++    assert(tb->pcOfLastInstr == endPc);
++    //auto it = m_brDirectors.find(tb->pcOfLastInstr);
++    auto it = m_brDirectors.find(endPc);
++    if (it != m_brDirectors.end()) {
++        // instrument branches that have branch directors
++        signal->connect(sigc::mem_fun(*this, &BranchDirector::onExecuteBlockEnd));
++
++        //m_brNext.insert(std::make_pair(endPc, targetPc));
++        m_brNextPcs.insert(targetPc);
++    }
++#endif
++}
++
++void BranchDirector::onExecuteBlockEnd(S2EExecutionState *state, uint64_t pc) {
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    if (plgState->isDSEEnabled()) {
++        getDebugStream(state) << "execute branch pc = " << hexval(pc) << "\n";
++
++        unsigned currStep = plgState->getStep();
++        if (currStep < m_blacklists.size()) {
++            // check for dead branch
++            auto it = m_blacklists[currStep].find(pc);
++            if (it != m_blacklists[currStep].end()) {
++                std::vector<uint64_t> blackPcs = it->second;
++                if (blackPcs.size() == 1 && blackPcs[0] == 0) {
++                    // it's a dead branch
++                    getWarningsStream(state) << "[BD] Terminate the state due to dead branch.\n";
++                    s2e()->getExecutor()->terminateStateAtFork(*state);
++                    state->zombify();
++                } 
++            }
++        }
++
++        // save the branch pc
++        assert(plgState->getLastBr() == 0);
++        plgState->setLastBr(pc);
++        //getDebugStream(state) << "[BD] Set last br pc to " << hexval(pc) << ".\n";
++    }
++#if 0
++    getDebugStream(state) << "execute branch (of interests) pc = " << hexval(pc) << "\n";
++
++    // check for dead branch
++    auto it = m_brDirectors.find(pc);
++    assert(it != m_brDirectors.end());
++    if (it->second == 0) {
++        // it's a dead branch
++        getWarningsStream(state) << "[BD] Terminate the state due to dead branch.\n";
++        s2e()->getExecutor()->terminateStateAtFork(*state);
++        state->zombify();
++    } 
++
++    // save the branch pc
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    assert(plgState->getLastBr() == 0);
++    plgState->setLastBr(pc);
++    //getDebugStream(state) << "[BD] Set last br pc to " << hexval(pc) << ".\n";
++#endif
++}
++
++void BranchDirector::onFork(S2EExecutionState *state, const std::vector<S2EExecutionState *> &newStates,
++                          const std::vector<klee::ref<klee::Expr>> &newConditions) {
++    assert(newStates.size() == 2);
++
++    //DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    /*
++    unsigned forkCount = plgState->getForkCount();
++
++    getWarningsStream(state) << "fork #" << forkCount << " out of #" << m_forkDirectors.size() << "\n";
++
++    assert(forkCount < m_forkDirectors.size());
++    const forkDirector &fd = m_forkDirectors[forkCount];
++
++    if (fd.pc != state->regs()->getPc()) {
++        getWarningsStream(state) << "fork PC mismatch: " << hexval(fd.pc) << " != " << hexval(state->regs()->getPc()) << "\n";
++        exit(-1);
++    }
++
++    assert(fd.id == 0 || fd.id == 1);
++    m_chosenState = newStates[fd.id];
++
++    */
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++
++    uint64_t brPc = state->regs()->getPc();
++    getWarningsStream(state) << "fork br pc: " << hexval(brPc) <<"\n";
++
++    unsigned currStep = plgState->getStep();
++    if (currStep < m_blacklists.size()) {
++        auto it = m_blacklists[currStep].find(brPc);
++        if (it != m_blacklists[currStep].end()) {
++            std::vector<uint64_t> blackPcs = it->second;
++            std::stringstream ss;
++            ss << "blacklist pc:";
++            for (uint64_t blackPc : blackPcs) {
++                ss << " " << hexval(blackPc);
++            }
++            getWarningsStream(state) << ss.str() << "\n";
++            bool allDead = false;
++            if (blackPcs.size() == 1 && blackPcs[0] == 0)
++                allDead = true;
++
++            bool feasible = false;
++            for (int i = 0; i < 2; i++) {
++                if (newStates[i] == 0) {
++                    continue;
++                }
++                if (allDead) {
++                    s2e()->getExecutor()->terminateStateAtFork(*newStates[i]);
++                    getWarningsStream(state) << "unpromising branch. terminated. 0 successor\n";
++                    if (newStates[i] == state) {
++                        // This is important if we kill the current state
++                        state->zombify();
++                    }
++                } else {
++                    uint64_t nextPc = newStates[i]->getNextPc();
++                    bool isBlack = false;
++                    for (uint64_t blackPc: blackPcs) {
++                        if (nextPc == blackPc) {
++                            isBlack = true;
++                            break;
++                        }
++                    }
++                    if (isBlack) {
++                        s2e()->getExecutor()->terminateStateAtFork(*newStates[i]);
++                        getWarningsStream(state) << "unpromising branch. terminated. next pc " << hexval(nextPc) << " is in blacklist.\n";
++                        /*
++                        if (newStates[i] == state) {
++                            // This is important if we kill the current state
++                            state->zombify();
++                        }
++                        */
++                    } else {
++                        feasible = true;
++                    }
++                }
++            }
++            if (!allDead && !feasible) {
++                getWarningsStream(state) << "concrete branch infeasible\n";
++            }
++
++        } else {
++            getWarningsStream(state) << "no director info\n";
++        }
++    }
++
++    s2e()->getExecutor()->yieldState(*state);
++}
++
++/*
++void BranchDirector::update(klee::ExecutionState *current, const klee::StateSet &addedStates,
++                          const klee::StateSet &removedStates) {
++    StateSet states;
++
++    foreach2 (it, addedStates.begin(), addedStates.end()) {
++        S2EExecutionState *state = static_cast<S2EExecutionState *>(*it);
++        states.insert(state);
++    }
++
++    foreach2 (it, removedStates.begin(), removedStates.end()) {
++        S2EExecutionState *state = static_cast<S2EExecutionState *>(*it);
++        states.erase(state);
++        m_states.erase(state);
++    }
++
++    foreach2 (it, states.begin(), states.end()) { m_states.insert(*it); }
++}
++
++klee::ExecutionState &BranchDirector::selectState() {
++    if (m_states.size() == 1) {
++        return **m_states.begin();
++    }
++
++    assert(m_states.find(m_chosenState) != m_states.end());
++    return *m_chosenState;
++}
++
++bool BranchDirector::empty() {
++    return m_states.empty();
++}
++*/
++
++bool BranchDirector::isTargetReached(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    return plgState->isReached();
++}
++
++void BranchDirector::enableDirectedSE(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    plgState->enableDSE();
++}
++
++void BranchDirector::disableDirectedSE(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(BranchDirectorState, state);
++    plgState->disableDSE();
++}
++
++void BranchDirector::onCustomInstruction(S2EExecutionState *state, uint64_t opcode) {
++    // XXX: find a better way of allocating custom opcodes
++    if (!OPCODE_CHECK(opcode, BRANCHDIRECTOR_OPCODE)) {
++        return;
++    }
++
++    // XXX: remove this mess. Should have a function for extracting
++    // info from opcodes.
++    opcode >>= 16;
++    uint8_t op = opcode & 0xFF;
++    opcode >>= 8;
++
++    BranchDirectorOpcodes opc = (BranchDirectorOpcodes) op;
++    switch (opc) {
++        // Pick the next state specified by the EAX register
++        case Enable: {
++            enableDirectedSE(state);
++            break;
++        }
++        case Disable: {
++            disableDirectedSE(state);
++            break;
++        }
++    }
++}
++
++/*
++ *
++ */
++
++BranchDirectorState::BranchDirectorState() {
++    m_forkCount = 0;
++    m_level = 0;
++    m_nextBr = 0;
++
++    m_lastBrPc = 0;
++    
++    m_step = 0;
++
++    m_enabled = false;
++    m_reached = false;
++}
++
++BranchDirectorState::~BranchDirectorState() {
++}
++
++BranchDirectorState *BranchDirectorState::clone() const {
++    return new BranchDirectorState(*this);
++}
++
++PluginState *BranchDirectorState::factory(Plugin *p, S2EExecutionState *s) {
++    return new BranchDirectorState();
++}
++
++void BranchDirectorState::increaseForkCount() {
++    m_forkCount++;
++}
++
++unsigned BranchDirectorState::getForkCount() const {
++    return m_forkCount;
++}
++
++void BranchDirectorState::increaseLevel() {
++    m_level++;
++}
++
++void BranchDirectorState::increaseStep() {
++    m_step++;
++}
++
++
++} // namespace plugins
++} // namespace s2e
+diff --git a/src/s2e/Plugins/MyPlugins/BranchDirector.h b/src/s2e/Plugins/MyPlugins/BranchDirector.h
+new file mode 100644
+index 0000000..39d3f86
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/BranchDirector.h
+@@ -0,0 +1,151 @@
++///
++/// Copyright (C) 2015, Dependable Systems Laboratory, EPFL
++/// Copyright (C) 2016, Cyberhaven
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#ifndef S2E_PLUGINS_DIRECTEDSEARCHER_H_
++#define S2E_PLUGINS_DIRECTEDSEARCHER_H_
++
++#include <klee/Searcher.h>
++#include <s2e/CorePlugin.h>
++#include <s2e/Plugin.h>
++#include <s2e/S2EExecutionState.h>
++
++#include <unordered_map>
++#include <unordered_set>
++
++namespace s2e {
++namespace plugins {
++
++#define BRANCHDIRECTOR_OPCODE 0xAF
++
++static inline uint64_t make_pc_pair(uint64_t pc1, uint64_t pc2) {
++    return (pc1 << 32 | (pc2 & 0xffffffff));
++}
++
++static inline std::pair<uint64_t, uint64_t> get_pc_pair(uint64_t pc) {
++    return std::make_pair(pc >> 32, pc & 0xffffffff);
++}
++
++class BranchDirector : public Plugin { //, public klee::Searcher {
++    S2E_PLUGIN
++public:
++    enum BranchDirectorOpcodes {
++        Disable = 0,
++        Enable = 1,
++    };
++
++private:
++    typedef std::set<S2EExecutionState *> StateSet;
++
++    StateSet m_states;
++    S2EExecutionState *m_chosenState;
++
++    // wzj
++    typedef struct {
++        std::string functionName;
++        uint64_t startPc;
++        uint64_t endPc;
++        std::unordered_map<uint64_t, uint64_t> brDirectors;
++    } Director;
++
++    std::vector<Director> m_directors;
++
++    std::vector<uint64_t> m_targetAddrs;
++    //std::unordered_map<uint64_t, uint64_t> m_brBlacklist;
++    std::vector<std::unordered_map<uint64_t, std::vector<uint64_t>>> m_blacklists;
++
++    std::unordered_set<uint64_t> m_allBranches;
++    std::unordered_set<uint64_t> m_uncoveredBranches;
++
++    void loadBlacklists(const std::string &folder);
++    bool loadBlacklist(const std::string &path);
++
++    void onFork(S2EExecutionState *state, const std::vector<S2EExecutionState *> &newStates,
++                const std::vector<klee::ref<klee::Expr>> &newConditions);
++
++    void onTranslateInstruction(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onInstructionExecution(S2EExecutionState *state, uint64_t pc);
++    void onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onExecuteBlockStart(S2EExecutionState *state, uint64_t pc);
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc, bool staticTarget, uint64_t targetPc);
++    void onExecuteBlockEnd(S2EExecutionState *state, uint64_t pc);
++
++    void onCustomInstruction(S2EExecutionState *state, uint64_t opcode);
++
++public:
++    BranchDirector(S2E *s2e);
++    ~BranchDirector();
++    void initialize();
++
++    bool isTargetReached(S2EExecutionState *state);
++    void enableDirectedSE(S2EExecutionState *state);
++    void disableDirectedSE(S2EExecutionState *state);
++
++    int getNumSteps() { return m_targetAddrs.size(); }
++
++    //virtual klee::ExecutionState &selectState();
++    //virtual void update(klee::ExecutionState *current, const klee::StateSet &addedStates,
++    //                    const klee::StateSet &removedStates);
++    //virtual bool empty();
++};
++
++class BranchDirectorState : public PluginState {
++private:
++    unsigned m_forkCount;
++    unsigned m_level;  // which level in the call chain
++    unsigned m_nextBr;  // next branch
++
++    uint64_t m_lastBrPc; // last branch instruction pc
++
++    unsigned m_step;  // current step
++
++    bool m_enabled; // whether directed symbolic execution enabled on this state
++    bool m_reached; // whether has reached target or not
++
++public:
++    std::unordered_set<uint64_t> m_coveredTBs; // start_pc, end_pc
++    std::unordered_set<uint64_t> m_coveredBranches; // branch_pc, target_pc
++
++public:
++    BranchDirectorState();
++    virtual ~BranchDirectorState();
++
++    virtual BranchDirectorState *clone() const;
++    static PluginState *factory(Plugin *p, S2EExecutionState *s);
++
++    void increaseForkCount();
++    unsigned getForkCount() const;
++    
++    void increaseLevel();
++
++    uint64_t getLastBr() {
++        return m_lastBrPc;
++    }
++
++    void setLastBr(uint64_t pc) {
++        m_lastBrPc = pc;
++    }
++
++    unsigned getStep() {
++        return m_step;
++    }
++
++    void increaseStep();
++    
++    bool isDSEEnabled() { return m_enabled; }
++    void enableDSE() { m_enabled = true; }
++    void disableDSE() { m_enabled = false; }
++
++    bool isReached() { return m_reached; }
++    void setReached() { m_reached = true; }
++    void unsetReached() { m_reached = false; }
++};
++
++} // namespace plugins
++} // namespace s2e
++
++#endif /* S2E_PLUGINS_DIRECTEDSEARCHER_H_ */
+diff --git a/src/s2e/Plugins/MyPlugins/MemRangeDetector.cpp b/src/s2e/Plugins/MyPlugins/MemRangeDetector.cpp
+new file mode 100644
+index 0000000..be12354
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MemRangeDetector.cpp
+@@ -0,0 +1,64 @@
++///
++/// Copyright (C) 2010-2015, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#include <s2e/cpu.h>
++
++#include <s2e/ConfigFile.h>
++#include <s2e/S2E.h>
++#include <s2e/Utils.h>
++
++#include "MemRangeDetector.h"
++
++namespace s2e {
++namespace plugins {
++
++S2E_DEFINE_PLUGIN(MemRangeDetector, "Detect if an address is in the memory range of interest.", "");
++
++void MemRangeDetector::initialize() {
++    ConfigFile *config = s2e()->getConfig();
++    std::string cfgKey = getConfigKey();
++    bool ok;
++
++    std::vector<std::string> sections = config->getListKeys(cfgKey);
++    foreach2 (it, sections.begin(), sections.end()) {
++        bool isBlacklist = config->getBool(cfgKey + "." + *it + ".isBlacklist", false);
++        uint64_t startAddr = config->getInt(cfgKey + "." + *it + ".startAddr", 0, &ok);
++        if (!ok) {
++            g_s2e->getWarningsStream() << "Cannot find startAddr in section '" << *it << "'\n";
++            exit(-1);
++        } 
++        uint64_t endAddr = config->getInt(cfgKey + "." + *it + ".endAddr", 0, &ok);
++        if (!ok) {
++            g_s2e->getWarningsStream() << "Cannot find endAddr in section '" << *it << "'\n";
++            exit(-1);
++        } 
++        g_s2e->getDebugStream() << "Enabled branch coverage for section '" << *it << "' from " << hexval(startAddr) << " to " << hexval(endAddr) << "\n";
++        if (isBlacklist) {
++            m_blacklist.push_back(MemRange(startAddr, endAddr));
++        } else {
++            m_whitelist.push_back(MemRange(startAddr, endAddr));
++        }
++    }
++}
++
++bool MemRangeDetector::isInRange(uint64_t address) {
++    for (int i = 0; i < m_blacklist.size(); i++) {
++        if (address >= m_blacklist[i].start && address <= m_blacklist[i].end) {
++            return false;
++        }
++    }
++    for (int i = 0; i < m_whitelist.size(); i++) {
++        if (address >= m_whitelist[i].start && address <= m_whitelist[i].end) {
++           return true;
++        }
++    }
++    return false;
++}
++
++
++} // namespace plugins
++} // namespace s2e
+diff --git a/src/s2e/Plugins/MyPlugins/MemRangeDetector.h b/src/s2e/Plugins/MyPlugins/MemRangeDetector.h
+new file mode 100644
+index 0000000..63ce60d
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MemRangeDetector.h
+@@ -0,0 +1,52 @@
++///
++/// Copyright (C) 2010-2013, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#ifndef S2E_PLUGINS_MEMRANGEDETECTOR_H
++#define S2E_PLUGINS_MEMRANGEDETECTOR_H
++
++#include <s2e/CorePlugin.h>
++#include <s2e/Plugin.h>
++#include <s2e/S2EExecutionState.h>
++#include <s2e/S2EExecutor.h>
++#include <s2e/Synchronization.h>
++
++#include <klee/Internal/ADT/ImmutableSet.h>
++
++#include <unordered_map>
++
++namespace s2e {
++namespace plugins {
++
++
++
++class MemRangeDetector : public Plugin {
++    S2E_PLUGIN
++public:
++    MemRangeDetector(S2E *s2e) : Plugin(s2e) {
++    }
++    
++    struct MemRange {
++        uint64_t start;
++        uint64_t end;
++
++        MemRange(uint64_t _start, uint64_t _end) : start(_start), end(_end) {
++        }
++    };
++
++    bool isInRange(uint64_t address);
++
++    void initialize();
++
++private:
++    std::vector<MemRange> m_whitelist;
++    std::vector<MemRange> m_blacklist;
++};
++
++} // namespace plugins
++} // namespace s2e
++
++#endif // S2E_PLUGINS_MEMRANGEDETECTOR_H
+diff --git a/src/s2e/Plugins/MyPlugins/MyDebugger.cpp b/src/s2e/Plugins/MyPlugins/MyDebugger.cpp
+new file mode 100644
+index 0000000..24c500f
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MyDebugger.cpp
+@@ -0,0 +1,397 @@
++///
++/// Copyright (C) 2010-2015, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#include <s2e/cpu.h>
++
++extern "C" {
++#include "qdict.h"
++#include "qint.h"
++#include "qjson.h"
++#include "qlist.h"
++}
++
++#include <s2e/ConfigFile.h>
++#include <s2e/S2E.h>
++#include <s2e/Utils.h>
++
++#include "MyDebugger.h"
++
++
++namespace s2e {
++namespace plugins {
++
++S2E_DEFINE_PLUGIN(MyDebugger, "My Debugger", "", "BaseInstructions", "FunctionMonitor", "TestCaseGenerator", "MyVmi");
++
++
++void MyDebugger::initialize() {
++    m_base = s2e()->getPlugin<BaseInstructions>();
++    m_monitor = static_cast<FunctionMonitor *>(s2e()->getPlugin("FunctionMonitor"));
++    m_vmi = static_cast<MyVmi *>(s2e()->getPlugin("MyVmi"));
++
++    ConfigFile *config = s2e()->getConfig();
++
++    m_terminateAtAP = config->getBool(getConfigKey() + ".terminateAtAcceptPoint", true);
++    m_terminateAtDP = config->getBool(getConfigKey() + ".terminateAtDropPoint", true);
++
++    //m_address = (uint64_t) config->getInt(getConfigKey() + ".addressToTrack");
++    ConfigFile::integer_list addresses = config->getIntegerList(getConfigKey() + ".addressToTrack");
++    getDebugStream() << "addressToTrack:\n";
++    for (uint64_t address : addresses) {
++        m_addresses.insert(address);
++        getDebugStream() << hexval(address) << "\n";
++    }
++
++    ConfigFile::string_list edges = config->getStringList(getConfigKey() + ".edgeToTrack");
++    getDebugStream() << "edgeToTrack:\n";
++    for (std::string edge : edges) {
++        size_t pos = edge.find(':');
++        uint64_t src = stoull(edge.substr(0, pos), NULL, 16);
++        uint64_t dst = stoull(edge.substr(pos + 1), NULL, 16);
++        m_edges[src] = dst;
++        getDebugStream() << hexval(src) << "->" << hexval(dst) << "\n";
++    }
++
++    //m_function = config->getString(getConfigKey() + ".functionToTrack");
++    ConfigFile::integer_list functions = config->getIntegerList(getConfigKey() + ".functionToTrack");
++    getDebugStream() << "functionToTrack:\n";
++    for (uint64_t functionAddress : functions) {
++        m_functions.insert(functionAddress);
++        getDebugStream() << hexval(functionAddress) << "\n";
++    }
++
++    ConfigFile::string_list accept_points = config->getStringList(getConfigKey() + ".acceptPoints");
++    getDebugStream() << "acceptPoints:\n";
++    for (std::string ap : accept_points) {
++        size_t pos = ap.find(':');
++        if (pos == std::string::npos) {
++            uint64_t address = stoull(ap, 0, 16);
++            m_accept_addrs.insert(address);
++            getDebugStream() << hexval(address) << "\n";
++        } else {
++            uint64_t src = stoull(ap.substr(0, pos), NULL, 16);
++            uint64_t dst = stoull(ap.substr(pos + 1), NULL, 16);
++            m_accept_edges[src] = dst;
++            getDebugStream() << hexval(src) << "->" << hexval(dst) << "\n";
++        }
++    }
++
++    ConfigFile::string_list drop_points = config->getStringList(getConfigKey() + ".dropPoints");
++    getDebugStream() << "dropPoints:\n";
++    for (std::string dp : drop_points) {
++        size_t pos = dp.find(':');
++        if (pos == std::string::npos) {
++            uint64_t address = stoull(dp, 0, 16);
++            m_drop_addrs.insert(address);
++            getDebugStream() << hexval(address) << "\n";
++        } else {
++            uint64_t src = stoull(dp.substr(0, pos), NULL, 16);
++            uint64_t dst = stoull(dp.substr(pos + 1), NULL, 16);
++            m_drop_edges[src] = dst;
++            getDebugStream() << hexval(src) << "->" << hexval(dst) << "\n";
++        }
++    }
++
++    if (!m_addresses.empty() || !m_accept_addrs.empty() || !m_drop_addrs.empty())
++        s2e()->getCorePlugin()->onTranslateInstructionStart.connect(sigc::mem_fun(*this, &MyDebugger::onTranslateInstructionStart));
++
++    if (!m_edges.empty() || !m_accept_edges.empty() || !m_drop_edges.empty())
++        s2e()->getCorePlugin()->onTranslateBlockEnd.connect(sigc::mem_fun(*this, &MyDebugger::onTranslateBlockEnd));
++
++    if (!m_functions.empty())
++        s2e()->getCorePlugin()->onTranslateBlockStart.connect(sigc::mem_fun(*this, &MyDebugger::onTranslateBlockStart));
++
++    m_tcgen = static_cast<testcases::TestCaseGenerator *>(s2e()->getPlugin("TestCaseGenerator"));
++}
++
++void MyDebugger::onTranslateInstructionStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++                                             uint64_t pc) {
++    if (m_addresses.find(pc) != m_addresses.end()) {
++        signal->connect(sigc::mem_fun(*this, &MyDebugger::onInstructionExecution));
++    }
++
++    if (m_accept_addrs.find(pc) != m_accept_addrs.end()) {
++        signal->connect(sigc::mem_fun(*this, &MyDebugger::onAcceptInstructionExecution));
++    }
++
++    if (m_drop_addrs.find(pc) != m_drop_addrs.end()) {
++        signal->connect(sigc::mem_fun(*this, &MyDebugger::onDropInstructionExecution));
++    }
++}
++
++void MyDebugger::onInstructionExecution(S2EExecutionState *state, uint64_t pc) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    if (plgState->enabled()) {
++        getDebugStream(state) << "Reached instruction of interest: " << hexval(pc) << '\n';
++    }
++}
++
++void MyDebugger::onAcceptInstructionExecution(S2EExecutionState *state, uint64_t pc) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    if (plgState->enabled()) {
++        //getDebugStream(state) << "Reached instruction of interest: " << hexval(pc) << '\n';
++        std::stringstream ss, apss;
++        ss << "Reached accept instruction of interest: " << hexval(pc);
++        apss << hexval(pc);
++        plgState->acceptPointReached(apss.str());
++        if (m_terminateAtAP) {
++            // terminate the state early
++            int sk_state = m_vmi->readSocketState(state);
++            getDebugStream(state) << ss.str() << "\n";
++            getDebugStream(state) << "Socket state: " << sk_state << "\n";
++            dumpAcceptAndDropPointsReached(state);
++            state->dumpQuerySMTv2(getDebugStream(state));
++            s2e()->getExecutor()->terminateStateEarly(*state, ss.str());
++        } 
++        //else {
++        //    getDebugStream(state) << ss.str() << "\n";
++        //    m_tcgen->generateTestCases(state, ss.str(), testcases::TC_LOG);
++        //}
++    }
++}
++
++void MyDebugger::onDropInstructionExecution(S2EExecutionState *state, uint64_t pc) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    if (plgState->enabled()) {
++        //getDebugStream(state) << "Reached instruction of interest: " << hexval(pc) << '\n';
++        std::stringstream ss, dpss;
++        ss << "Reached drop instruction of interest: " << hexval(pc);
++        dpss << hexval(pc);
++        plgState->dropPointReached(dpss.str());
++        if (m_terminateAtDP) {
++            // terminate the state early
++            int sk_state = m_vmi->readSocketState(state);
++            getDebugStream(state) << ss.str() << "\n";
++            getDebugStream(state) << "Socket state: " << sk_state << "\n";
++            dumpAcceptAndDropPointsReached(state);
++            state->dumpQuerySMTv2(getDebugStream(state));
++            s2e()->getExecutor()->terminateStateEarly(*state, ss.str());
++        } 
++        //else {
++        //    getDebugStream(state) << ss.str() << "\n";
++        //    m_tcgen->generateTestCases(state, ss.str(), testcases::TC_LOG);
++        //}
++    }
++}
++
++void MyDebugger::onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++                                       uint64_t pc) {
++    if (!m_registered) {
++        for (uint64_t functionAddress : m_functions) {
++            FunctionMonitor::CallSignal *callSignal = m_monitor->getCallSignal(state, functionAddress, -1);
++            callSignal->connect(sigc::mem_fun(*this, &MyDebugger::myFunctionCallMonitor));
++            getDebugStream(state) << "hooked function address " << hexval(functionAddress) << "\n";
++        }
++        m_registered = true;
++    }
++}
++
++void MyDebugger::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, 
++                                         uint64_t endPc, bool staticTarget, uint64_t targetPc) {
++    //getDebugStream(state) << "MyDebugger::onTranslateBlockEnd: endPc=" << hexval(endPc) << ", targetPc=" << hexval(targetPc) << '\n';
++    assert(tb->pcOfLastInstr == endPc);
++
++    // only track edges of interest
++    auto iter = m_edges.find(endPc);
++    if (iter != m_edges.end() && targetPc == iter->second) {
++        signal2->connect(sigc::mem_fun(*this, &MyDebugger::onEdgeExecution));
++    }
++
++    // track accept edges
++    auto iter2 = m_accept_edges.find(endPc);
++    if (iter2 != m_accept_edges.end() && targetPc == iter2->second) {
++        signal2->connect(sigc::mem_fun(*this, &MyDebugger::onAcceptEdgeExecution));
++    }
++
++    // track drop edges
++    auto iter3 = m_drop_edges.find(endPc);
++    if (iter3 != m_drop_edges.end() && targetPc == iter3->second) {
++        signal2->connect(sigc::mem_fun(*this, &MyDebugger::onDropEdgeExecution));
++    }
++}
++
++void MyDebugger::onEdgeExecution(S2EExecutionState *state, uint64_t pc, uint64_t nextpc) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++#if 0
++    assert(plgState->m_lastPc == 0);
++    plgState->m_lastPc = pc;
++#endif
++    if (plgState->enabled()) {
++        auto iter = m_edges.find(pc);
++        assert(iter != m_edges.end());
++        assert(iter->second == nextpc);
++        getDebugStream(state) << "Reached edge of interest: " << hexval(pc) << "->" << hexval(nextpc) << '\n';
++    }
++}
++
++void MyDebugger::onAcceptEdgeExecution(S2EExecutionState *state, uint64_t pc, uint64_t nextpc) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++#if 0
++    assert(plgState->m_lastPc == 0);
++    plgState->m_lastPc = pc;
++#endif
++    if (plgState->enabled()) {
++        auto iter = m_accept_edges.find(pc);
++        assert(iter != m_accept_edges.end());
++        assert(iter->second == nextpc);
++        //getDebugStream(state) << "Reached accept edge of interest: " << hexval(pc) << "->" << hexval(nextpc) << '\n';
++        std::stringstream ss, apss;
++        ss << "Reached accept edge of interest: " << hexval(pc) << "->" << hexval(nextpc);
++        apss << hexval(pc) << "->" << hexval(nextpc);
++        plgState->acceptPointReached(apss.str());
++        if (m_terminateAtAP) {
++            // terminate the state early
++            int sk_state = m_vmi->readSocketState(state);
++            getDebugStream(state) << ss.str() << "\n";
++            getDebugStream(state) << "Socket state: " << sk_state << "\n";
++            dumpAcceptAndDropPointsReached(state);
++            state->dumpQuerySMTv2(getDebugStream(state));
++            s2e()->getExecutor()->terminateStateEarly(*state, ss.str());
++        }
++        //else {
++        //    getDebugStream(state) << ss.str() << "\n";
++        //    m_tcgen->generateTestCases(state, ss.str(), testcases::TC_LOG);
++        //}
++    }
++}
++
++void MyDebugger::onDropEdgeExecution(S2EExecutionState *state, uint64_t pc, uint64_t nextpc) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++#if 0
++    assert(plgState->m_lastPc == 0);
++    plgState->m_lastPc = pc;
++#endif
++    if (plgState->enabled()) {
++        auto iter = m_drop_edges.find(pc);
++        assert(iter != m_drop_edges.end());
++        assert(iter->second == nextpc);
++        //getDebugStream(state) << "Reached drop edge of interest: " << hexval(pc) << "->" << hexval(nextpc) << '\n';
++        std::stringstream ss, dpss;
++        ss << "Reached drop edge of interest: " << hexval(pc) << "->" << hexval(nextpc);
++        dpss << hexval(pc) << "->" << hexval(nextpc);
++        plgState->dropPointReached(dpss.str());
++        if (m_terminateAtDP) {
++            // terminate the state early
++            int sk_state = m_vmi->readSocketState(state);
++            getDebugStream(state) << ss.str() << "\n";
++            getDebugStream(state) << "Socket state: " << sk_state << "\n";
++            dumpAcceptAndDropPointsReached(state);
++            state->dumpQuerySMTv2(getDebugStream(state));
++            s2e()->getExecutor()->terminateStateEarly(*state, ss.str());
++        }
++        //else {
++        //    getDebugStream(state) << ss.str() << "\n";
++        //    m_tcgen->generateTestCases(state, ss.str(), testcases::TC_LOG);
++        //}
++    }
++}
++
++void MyDebugger::myFunctionCallMonitor(S2EExecutionState *state, FunctionMonitorState *fns) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    if (plgState->enabled()) {
++        getDebugStream(state) << "My function handler is called\n";
++        FUNCMON_REGISTER_RETURN(state, fns, MyDebugger::myFunctionRetMonitor)
++    }
++}
++
++void MyDebugger::myFunctionRetMonitor(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    if (plgState->enabled()) {
++        getDebugStream(state) << "My function ret handler is called\n";
++    }
++} 
++
++void MyDebugger::enable(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    plgState->enable();
++}
++
++void MyDebugger::disable(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    plgState->disable();
++}
++
++void MyDebugger::acceptPointReached(S2EExecutionState *state, std::string ap) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    plgState->acceptPointReached(ap);
++}
++
++void MyDebugger::dropPointReached(S2EExecutionState *state, std::string dp) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    plgState->dropPointReached(dp);
++}
++
++bool MyDebugger::hasReachedDropPoints(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    return plgState->hasReachedDropPoints();
++}
++
++void MyDebugger::dumpAcceptPointsReached(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    std::vector<std::string> aps = plgState->getAcceptPointsReached();
++
++    std::stringstream ss;
++    ss << "Accept points reached: ";
++    for (auto iter = aps.cbegin(); iter != aps.cend(); ++iter) {
++        ss << *iter << ' ';
++    }
++    getDebugStream(state) << ss.str() << "\n";
++}
++
++void MyDebugger::dumpDropPointsReached(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyDebuggerState, state);
++    std::vector<std::string> dps = plgState->getDropPointsReached();
++
++    std::stringstream ss;
++    ss << "Drop points reached: ";
++    for (auto iter = dps.cbegin(); iter != dps.cend(); ++iter) {
++        ss << *iter << ' ';
++    }
++    getDebugStream(state) << ss.str() << "\n";
++}
++
++/*
++ * MyDebuggerState
++ */
++
++MyDebuggerState::MyDebuggerState() {
++    m_lastPc = 0;
++    m_enabled = true;
++}
++
++MyDebuggerState::~MyDebuggerState() {
++}
++
++MyDebuggerState *MyDebuggerState::clone() const {
++    return new MyDebuggerState(*this);
++}
++
++PluginState *MyDebuggerState::factory(Plugin *p, S2EExecutionState *s) {
++    return new MyDebuggerState();
++}
++
++void MyDebuggerState::acceptPointReached(std::string ap) {
++    m_acceptPointsReached.push_back(ap);
++}
++
++void MyDebuggerState::dropPointReached(std::string dp) {
++    m_dropPointsReached.push_back(dp);
++}
++
++std::vector<std::string> &MyDebuggerState::getAcceptPointsReached() {
++    return m_acceptPointsReached;
++}
++
++std::vector<std::string> &MyDebuggerState::getDropPointsReached() {
++    return m_dropPointsReached;
++}
++
++bool MyDebuggerState::hasReachedDropPoints() {
++    return !m_dropPointsReached.empty();
++}
++
++} // namespace plugins
++} // namespace s2e
+diff --git a/src/s2e/Plugins/MyPlugins/MyDebugger.h b/src/s2e/Plugins/MyPlugins/MyDebugger.h
+new file mode 100644
+index 0000000..e3f5454
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MyDebugger.h
+@@ -0,0 +1,124 @@
++///
++/// Copyright (C) 2010-2013, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#ifndef S2E_PLUGINS_MYDEBUGGER_H
++#define S2E_PLUGINS_MYDEBUGGER_H
++
++#include <s2e/CorePlugin.h>
++#include <s2e/Plugin.h>
++#include <s2e/Plugins/ExecutionMonitors/FunctionMonitor.h>
++#include <s2e/Plugins/ExecutionTracers/TestCaseGenerator.h>
++#include <s2e/Plugins/MyPlugins/MyVmi.h>
++#include <s2e/S2EExecutionState.h>
++#include <s2e/S2EExecutor.h>
++#include <s2e/Synchronization.h>
++
++#include <klee/Internal/ADT/ImmutableSet.h>
++
++
++namespace s2e {
++namespace plugins {
++
++class MyDebugger : public Plugin {
++    S2E_PLUGIN
++public:
++    MyDebugger(S2E *s2e) : Plugin(s2e) {
++        m_registered = false;
++        m_terminateAtAP = true;
++        m_terminateAtDP = true;
++    }
++
++    void initialize();
++
++    void enable(S2EExecutionState *state);
++    void disable(S2EExecutionState *state);
++
++    void acceptPointReached(S2EExecutionState *state, std::string ap);
++    void dropPointReached(S2EExecutionState *state, std::string dp);
++
++    bool hasReachedDropPoints(S2EExecutionState *state);
++
++    void dumpAcceptPointsReached(S2EExecutionState *state);
++    void dumpDropPointsReached(S2EExecutionState *state);
++    void dumpAcceptAndDropPointsReached(S2EExecutionState *state) {
++        dumpAcceptPointsReached(state);
++        dumpDropPointsReached(state);
++    }
++
++private:
++    BaseInstructions *m_base;
++    FunctionMonitor *m_monitor;
++
++    MyVmi *m_vmi;
++
++    testcases::TestCaseGenerator *m_tcgen;
++
++    bool m_registered;
++    bool m_terminateAtAP;
++    bool m_terminateAtDP;
++
++    std::unordered_set<uint64_t> m_addresses;
++    std::unordered_map<uint64_t, uint64_t> m_edges;
++    std::unordered_set<uint64_t> m_functions;
++
++    // accept points
++    std::unordered_set<uint64_t> m_accept_addrs;
++    std::unordered_map<uint64_t, uint64_t> m_accept_edges;
++    // drop points
++    std::unordered_set<uint64_t> m_drop_addrs;
++    std::unordered_map<uint64_t, uint64_t> m_drop_edges;
++
++    void onTranslateInstructionStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onTranslateBlockStart(ExecutionSignal *, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, 
++                             uint64_t endPc, bool staticTarget, uint64_t targetPc);
++
++    void onInstructionExecution(S2EExecutionState *state, uint64_t pc);
++    void onAcceptInstructionExecution(S2EExecutionState *state, uint64_t pc);
++    void onDropInstructionExecution(S2EExecutionState *state, uint64_t pc);
++    void onExecuteBlockStart(S2EExecutionState *state, uint64_t pc);
++    void onEdgeExecution(S2EExecutionState *state, uint64_t pc, uint64_t nextpc);
++    void onAcceptEdgeExecution(S2EExecutionState *state, uint64_t pc, uint64_t nextpc);
++    void onDropEdgeExecution(S2EExecutionState *state, uint64_t pc, uint64_t nextpc);
++
++    void myFunctionCallMonitor(S2EExecutionState *state, FunctionMonitorState *fns);
++    void myFunctionRetMonitor(S2EExecutionState *state);
++};
++
++class MyDebuggerState : public PluginState {
++public:
++    MyDebuggerState();
++    virtual ~MyDebuggerState();
++
++    virtual MyDebuggerState *clone() const;
++    static PluginState *factory(Plugin *p, S2EExecutionState *s);
++
++    bool enabled() { return m_enabled; }
++    void enable() { m_enabled = true; }
++    void disable() { m_enabled = false; }
++
++    void acceptPointReached(std::string ap);
++    void dropPointReached(std::string dp);
++
++    std::vector<std::string> &getAcceptPointsReached();
++    std::vector<std::string> &getDropPointsReached();
++
++    bool hasReachedDropPoints();
++
++    uint64_t m_lastPc;
++
++private:
++    bool m_enabled;
++
++    std::vector<std::string> m_acceptPointsReached;
++    std::vector<std::string> m_dropPointsReached;
++};
++
++} // namespace plugins
++} // namespace s2e
++
++#endif // S2E_PLUGINS_MYDEBUGGER_H
+diff --git a/src/s2e/Plugins/MyPlugins/MyTracer.cpp b/src/s2e/Plugins/MyPlugins/MyTracer.cpp
+new file mode 100644
+index 0000000..15d151b
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MyTracer.cpp
+@@ -0,0 +1,367 @@
++///
++/// Copyright (C) 2010-2015, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#include <s2e/cpu.h>
++
++extern "C" {
++#include "qdict.h"
++#include "qint.h"
++#include "qjson.h"
++#include "qlist.h"
++}
++
++#include <s2e/ConfigFile.h>
++#include <s2e/S2E.h>
++#include <s2e/Utils.h>
++
++#include <arpa/inet.h>
++
++#include "MyTracer.h"
++
++namespace s2e {
++namespace plugins {
++namespace coverage {
++
++S2E_DEFINE_PLUGIN(MyTracer, "My TB tracer", "", "BaseInstructions", "ModuleExecutionDetector");
++
++struct MyTracerState : public PluginState {
++	ModuleTBs coverage;
++	
++	static PluginState *factory(Plugin *p, S2EExecutionState *) {
++		return new MyTracerState();
++	}
++
++	virtual MyTracerState *clone() const {
++		return new MyTracerState(*this);
++	}
++};
++
++void MyTracer::initialize() {
++    m_base = s2e()->getPlugin<BaseInstructions>();
++    m_detector = static_cast<ModuleExecutionDetector *>(s2e()->getPlugin("ModuleExecutionDetector"));
++    m_monitor = static_cast<FunctionMonitor *>(s2e()->getPlugin("FunctionMonitor"));
++    //m_tracer = static_cast<TranslationBlockTracer *>(s2e()->getPlugin("TranslationBlockTracer"));
++    //m_coverage = static_cast<TranslationBlockCoverage *>(s2e()->getPlugin("TranslationBlockCoverage"));
++    m_brdirector = static_cast<BranchDirector *>(s2e()->getPlugin("BranchDirector"));
++
++    auto cfg = s2e()->getConfig();
++
++    m_traceBlockTranslation = cfg->getBool(getConfigKey() + ".traceBlockTranslation");
++    m_traceBlockExecution = cfg->getBool(getConfigKey() + ".traceBlockExecution");
++    // This is mainly for debugging, in normal use would generate too many files
++    bool writeCoverageOnStateKill = cfg->getBool(getConfigKey() + ".writeCoverageOnStateKill");
++    if (writeCoverageOnStateKill) {
++        //s2e()->getCorePlugin()->onStateKill.connect(sigc::mem_fun(*this, &MyTracer::onStateKill));
++    }
++
++    m_concretePacketCounter = cfg->getInt(getConfigKey() + ".concretePacketCounter");
++    //m_concretePacketCounter = m_brdirector->getNumSteps();
++
++    // TODO: Read symbol table from Linux kernel
++
++    //s2e()->getCorePlugin()->onTranslateBlockStart.connect(sigc::mem_fun(*this, &MyTracer::onTranslateBlockStart));
++
++    //s2e()->getCorePlugin()->onTranslateBlockComplete.connect(sigc::mem_fun(*this, &MyTracer::onTranslateBlockComplete));
++    
++    //m_detector->onModuleTranslateBlockComplete.connect(
++    //    sigc::mem_fun(*this, &MyTracer::onModuleTranslateBlockComplete));
++
++    //s2e()->getCorePlugin()->onTimer.connect(sigc::mem_fun(*this, &MyTracer::onTimer));
++
++    //s2e()->getCorePlugin()->onUpdateStates.connect(sigc::mem_fun(*this, &MyTracer::onUpdateStates));
++}
++
++void MyTracer::onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++                                          uint64_t pc) {
++    if (m_traceBlockTranslation) {
++        //getDebugStream(state) << "Translating block at " << hexval(pc) << "\n";
++
++        if (m_traceBlockExecution) {
++            signal->connect(sigc::mem_fun(*this, &MyTracer::onExecuteBlockStart));
++        }
++
++    }
++
++    FunctionMonitor::CallSignal *callSignal;
++
++    uint64_t functionAddress = 0xc177d840;
++    //uint64_t functionAddress = 0xc1780b70;
++
++    if (m_registered) {
++        return;
++    } 
++
++    callSignal = m_monitor->getCallSignal(state, functionAddress, -1);
++    callSignal->connect(sigc::mem_fun(*this, &MyTracer::myFunctionCallMonitor));
++    m_registered = true;
++    getDebugStream(state) << "hooked tcp_v4_rcv\n";
++}
++
++void MyTracer::onExecuteBlockStart(S2EExecutionState *state, uint64_t pc) {
++    getDebugStream(state) << "Executing block at " << hexval(pc) << "\n";
++
++}
++
++void MyTracer::onTranslateBlockComplete(S2EExecutionState *state, TranslationBlock *tb, uint64_t last_pc) {
++    if (!m_tracing) {
++        return;
++    }
++
++    // Record Coverage
++    std::string moduleName = "vmlinux";
++    unsigned moduleidx = 0;
++
++    TB ntb;
++    ntb.startPc = tb->pc;
++    ntb.lastPc = last_pc;
++    ntb.startOffset = ntb.startPc - 0xc0000000;
++    ntb.size = tb->size;
++
++    // TODO: why assertion fails
++    //assert(ntb.startPc + ntb.size == ntb.lastPc);
++
++    DECLARE_PLUGINSTATE(MyTracerState, state);
++    auto &tbs = plgState->coverage[moduleName];
++    auto newTbs = tbs.insert(ntb);
++    plgState->coverage[moduleName] = newTbs;
++
++    // Also save aggregated coverage info
++    // and keep track of the states that discovered
++    // new blocks so that it is easier to retrieve
++    // them, e.g., every few minutes.
++    bool newBlock = false;
++    auto mit = m_localCoverage.find(moduleName);
++    if (mit == m_localCoverage.end()) {
++        newBlock = true;
++    } else {
++        newBlock = (*mit).second.count(ntb) == 0;
++    }
++
++    bool wasCovered = false;
++
++    Bitmap *bmp = m_globalCoverage.acquire();
++    bmp->setCovered(moduleidx, ntb.startOffset, ntb.size, wasCovered);
++    m_globalCoverage.release();
++
++    if (newBlock) {
++        m_localCoverage[moduleName].insert(ntb);
++        //m_newBlockStates.insert(state);
++        if (!wasCovered) {
++            //onNewBlockCovered.emit(state);
++        }
++    }
++}
++
++/*
++void MyTracer::onModuleTranslateBlockComplete(S2EExecutionState *state, const ModuleDescriptor &module,
++                                                              TranslationBlock *tb, uint64_t last_pc) {
++    getDebugStream(state) << "called onModuleTranslationBlockComplete2\n";
++    
++    TB ntb;
++    ntb.startPc = module.ToNativeBase(tb->pc);
++    ntb.lastPc = module.ToNativeBase(last_pc);
++    ntb.startOffset = ntb.startPc - module.NativeBase;
++    ntb.size = tb->size;
++
++    DECLARE_PLUGINSTATE(MyTracerState, state);
++    auto &tbs = plgState->coverage[module.Name];
++    auto newTbs = tbs.insert(ntb);
++    plgState->coverage[module.Name] = newTbs;
++
++    // Also save aggregated coverage info
++    // and keep track of the states that discovered
++    // new blocks so that it is easier to retrieve
++    // them, e.g., every few minutes.
++    bool newBlock = false;
++    auto mit = m_localCoverage.find(module.Name);
++    if (mit == m_localCoverage.end()) {
++        newBlock = true;
++    } else {
++        newBlock = (*mit).second.count(ntb) == 0;
++    }
++
++    unsigned moduleidx;
++    bool wasCovered = false;
++    if (m_detector->getModuleId(module, &moduleidx)) {
++        Bitmap *bmp = m_globalCoverage.acquire();
++        bmp->setCovered(moduleidx, ntb.startOffset, ntb.size, wasCovered);
++        m_globalCoverage.release();
++    }
++
++    if (newBlock) {
++        m_localCoverage[module.Name].insert(ntb);
++        m_newBlockStates.insert(state);
++        if (!wasCovered) {
++            onNewBlockCovered.emit(state);
++        }
++    }
++}
++*/
++
++void MyTracer::myFunctionCallMonitor(S2EExecutionState *state, FunctionMonitorState *fns) {
++    getDebugStream(state) << "My function handler is called\n";
++
++    // Fork the current state
++#if 0
++    if (m_firstTime) {
++        s2e()->getExecutor()->forkAndSave();
++        m_firstTime = false;
++    }
++#endif
++    // extract the TCP header 
++    uint32_t sk_buff;
++    if (!state->regs()->read(CPU_OFFSET(regs[R_EAX]), &sk_buff, sizeof(sk_buff), false)) {
++        getWarningsStream(state) << "ERROR: symbolic argument was passed to tcp_v4_rcv.\n";
++        return;
++    }  
++    getDebugStream(state) << "sk_buff: " << hexval(sk_buff) << "\n";
++
++    uint32_t offset = 172;  // offset to sk_buff->data, this could change
++    uint32_t sk_buff_data;
++    if (!state->mem()->read(sk_buff + offset, &sk_buff_data, sizeof(sk_buff_data))) {
++        getWarningsStream(state) << "ERROR: couldn't read memory " << hexval(sk_buff + offset) << "\n";
++        return;
++    }
++    getDebugStream(state) << "offset: " << offset << ", sk_buff->data: " << hexval(sk_buff_data) << "\n";
++
++    uint16_t sport, dport;
++    if (!state->mem()->read(sk_buff_data, &sport, sizeof(sport))) {
++        getWarningsStream(state) << "ERROR: couldn't read src port " << hexval(sk_buff_data) << "\n";
++        return;
++    }
++    sport = ntohs(sport);
++    if (!state->mem()->read(sk_buff_data + 2, &dport, sizeof(dport))) {
++        getWarningsStream(state) << "ERROR: couldn't read dst port " << hexval(sk_buff_data + 2) << "\n";
++        return;
++    }
++    dport = ntohs(dport);
++    getDebugStream(state) << "TCP src port: " << sport << ", dst port: " << dport << "\n";
++
++    uint32_t seq_num;
++    if (!state->mem()->read(sk_buff_data + 4, &seq_num, sizeof(seq_num))) {
++        getWarningsStream(state) << "ERROR: couldn't read seq num " << hexval(sk_buff_data + 4) << "\n";
++        return;
++    }
++    getDebugStream(state) << "TCP seq num (network order): " << hexval(seq_num) << "\n";
++
++    const int svr_port = 5555;
++    if (dport != svr_port) {
++        return;
++    }
++
++    // symbolize when packet counter count down to 0
++    if (m_concretePacketCounter == 0) {
++        // symbolize TCP packet header fields
++        m_base->makeSymbolic(state, sk_buff_data + 4, 4, "tcp_seq_num", false);
++        m_base->makeSymbolic(state, sk_buff_data + 8, 4, "tcp_ack_num", false);
++        m_base->makeSymbolic(state, sk_buff_data + 12, 1, "tcp_doff_reserved_flags", false);
++        m_base->makeSymbolic(state, sk_buff_data + 13, 1, "tcp_flags", false);
++        m_base->makeSymbolic(state, sk_buff_data + 14, 2, "tcp_win", false);
++        m_base->makeSymbolic(state, sk_buff_data + 16, 2, "tcp_csum", false);
++        m_base->makeSymbolic(state, sk_buff_data + 18, 2, "tcp_urg_ptr", false);
++
++        getDebugStream(state) << "TCP packet header symbolized.\n";
++
++        m_tracing = true;
++    }
++    m_concretePacketCounter--;
++
++    m_brdirector->enableDirectedSE(state);
++
++    //m_tracer->setProperty(state, "trace", "1");
++    //m_coverage->setProperty(state, "trace", "1");
++
++    FUNCMON_REGISTER_RETURN(state, fns, MyTracer::myFunctionRetMonitor)
++}
++
++void MyTracer::myFunctionRetMonitor(S2EExecutionState *state) {
++    getDebugStream(state) << "My function ret handler is called\n";
++
++    m_brdirector->disableDirectedSE(state);
++    if (!m_brdirector->isTargetReached(state)) {
++        // failed to reach any target
++        getDebugStream(state) << "Failed to reach any target, terminating the state.\n";
++        s2e()->getExecutor()->terminateStateAtFork(*state);
++        state->zombify();
++    }
++
++    //m_tracer->setProperty(state, "trace", "0");
++    //m_coverage->setProperty(state, "trace", "0");
++    m_tracing = false;
++}
++
++//void MyTracer::onUpdateStates(S2EExecutionState *currentState, const klee::StateSet &addedStates,
++//                                   const klee::StateSet &removedStates) {
++//    for (auto it : removedStates) {
++//        m_newBlockStates.erase(it);
++//    }
++//}
++
++void MyTracer::onStateKill(S2EExecutionState *state) {
++    generateJsonCoverageFile(state);
++}
++
++void MyTracer::onTimer() {
++    // TODO: print number of TBs
++}
++
++const ModuleTBs &MyTracer::getCoverage(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyTracerState, state);
++    return plgState->coverage;
++}
++
++std::string MyTracer::generateJsonCoverageFile(S2EExecutionState *state) {
++    std::string path;
++
++    std::stringstream fileName;
++    fileName << "tbcoverage-" << state->getID() << ".json";
++    path = s2e()->getOutputFilename(fileName.str());
++
++    generateJsonCoverageFile(state, path);
++
++    return path;
++}
++
++void MyTracer::generateJsonCoverageFile(S2EExecutionState *state, const std::string &path) {
++    std::stringstream coverage;
++    generateJsonCoverage(state, coverage);
++
++    std::ofstream o(path.c_str());
++    o << coverage.str();
++    o.close();
++}
++
++void MyTracer::generateJsonCoverage(S2EExecutionState *state, std::stringstream &coverage) {
++    QDict *pt = qdict_new();
++
++    const ModuleTBs &tbs = getCoverage(state);
++    for (auto module : tbs) {
++        QList *blocks = qlist_new();
++        for (auto &tb : module.second) {
++
++            QList *info = qlist_new();
++            qlist_append_obj(info, QOBJECT(qint_from_int(tb.startPc)));
++            qlist_append_obj(info, QOBJECT(qint_from_int(tb.lastPc)));
++            qlist_append_obj(info, QOBJECT(qint_from_int(tb.size)));
++
++            qlist_append_obj(blocks, QOBJECT(info));
++        }
++
++        qdict_put_obj(pt, module.first.c_str(), QOBJECT(blocks));
++    }
++
++    QString *json = qobject_to_json(QOBJECT(pt));
++
++    coverage << qstring_get_str(json) << "\n";
++
++    QDECREF(json);
++    QDECREF(pt);
++}
++
++} // namespace coverage
++} // namespace plugins
++} // namespace s2e
+diff --git a/src/s2e/Plugins/MyPlugins/MyTracer.h b/src/s2e/Plugins/MyPlugins/MyTracer.h
+new file mode 100644
+index 0000000..bfea27c
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MyTracer.h
+@@ -0,0 +1,168 @@
++///
++/// Copyright (C) 2010-2013, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#ifndef S2E_PLUGINS_MYTRACER_H
++#define S2E_PLUGINS_MYTRACER_H
++
++#include <s2e/CorePlugin.h>
++#include <s2e/Plugin.h>
++#include <s2e/Plugins/ExecutionMonitors/FunctionMonitor.h>
++#include <s2e/Plugins/ExecutionTracers/TranslationBlockTracer.h>
++#include <s2e/Plugins/Coverage/TranslationBlockCoverage.h>
++#include <s2e/Plugins/PathLimiters/BranchDirector.h>
++#include <s2e/S2EExecutionState.h>
++#include <s2e/S2EExecutor.h>
++#include <s2e/Synchronization.h>
++
++#include <klee/Internal/ADT/ImmutableSet.h>
++
++#include <unordered_map>
++
++namespace s2e {
++namespace plugins {
++namespace coverage {
++
++/*
++struct TB {
++    uint64_t startPc;
++    uint64_t lastPc;
++    uint32_t size;
++    uint32_t startOffset;
++
++    bool operator<(const TB &a) const {
++        // Don't allow overlapping TBs because this
++        // causes many redundant blocks in the set.
++        return startPc + size <= a.lastPc;
++    }
++};
++
++// Use an immutable set to share as much information between the states.
++// This also avoids costly copying when forking.
++typedef klee::ImmutableSet<TB> TBs;
++typedef std::unordered_map<std::string, TBs> ModuleTBs;
++
++///
++/// \brief mergeCoverage merges into dest translation blocks in source
++/// \param dest the destination where to merge
++/// \param source the blocks to merge into dest
++/// \return true if source contains blocks not present in dest
++///
++bool mergeCoverage2(ModuleTBs &dest, const ModuleTBs &source);
++
++///
++/// \brief The Bitmap class represents the coverage status
++/// of each byte of every binary.
++///
++/// It can hold up to 10 binaries of 8 MB each. The maximum size
++/// is hardcoded in order to easily share this information
++/// between multiple S2E instances through shared memory.
++///
++/// Notes:
++///   - It is up to the caller to assign an index to each module
++///
++class Bitmap {
++    static const unsigned MAX_MODULES = 1;
++    static const unsigned MAX_MODULE_BYTES = 8 * 1024 * 1024;
++    uint8_t coverage[MAX_MODULES][MAX_MODULE_BYTES / 8];
++
++public:
++    inline bool isCovered(unsigned module, unsigned offset, bool &covered) const {
++        if (module >= MAX_MODULES || offset >= MAX_MODULE_BYTES) {
++            return false;
++        }
++
++        covered = (coverage[module][offset / 8] & (1 << (offset % 8))) != 0;
++        return true;
++    }
++
++    inline bool setCovered(unsigned module, unsigned offset) {
++        if (module >= MAX_MODULES || offset >= MAX_MODULE_BYTES) {
++            return false;
++        }
++
++        coverage[module][offset / 8] |= (1 << (offset % 8));
++        return true;
++    }
++
++    ///
++    /// \brief setCovered covers the given module range
++    /// \param module module index to cover
++    /// \param start first byte of the range to cover
++    /// \param count how many bytes to cover
++    /// \param covered true if the range was already (partly) covered
++    /// \return false if coverage info could not be set
++    ///
++    inline bool setCovered(unsigned module, unsigned start, unsigned count, bool &covered) {
++        covered = false;
++        bool success = true;
++        for (unsigned i = 0; i < count; ++i) {
++            success &= isCovered(module, start + i, covered);
++            success &= setCovered(module, start + i);
++        }
++        return success;
++    }
++};
++
++typedef S2ESynchronizedObject<Bitmap> GlobalCoverage;
++*/
++
++class MyTracer : public Plugin {
++    S2E_PLUGIN
++public:
++    MyTracer(S2E *s2e) : Plugin(s2e) {
++        m_registered = false;
++        m_tracing = false;
++        m_firstTime = true;
++    }
++
++    void initialize();
++
++    const ModuleTBs &getCoverage(S2EExecutionState *state);
++
++    std::string generateJsonCoverageFile(S2EExecutionState *state);
++    void generateJsonCoverageFile(S2EExecutionState *state, const std::string &filePath);
++    void generateJsonCoverage(S2EExecutionState *state, std::stringstream &ss);
++
++private:
++    BaseInstructions *m_base;
++    ModuleExecutionDetector *m_detector;
++    FunctionMonitor *m_monitor;
++    TranslationBlockTracer *m_tracer;
++    TranslationBlockCoverage *m_coverage;
++    BranchDirector *m_brdirector;
++
++    //klee::StateSet m_newBlockStates;
++    ModuleTBs m_localCoverage;
++    GlobalCoverage m_globalCoverage;
++
++    bool m_traceBlockTranslation;
++    bool m_traceBlockExecution;
++
++    bool m_registered;
++    bool m_tracing;
++    bool m_firstTime;
++    int m_concretePacketCounter;
++
++    void onTimer();
++    void onStateKill(S2EExecutionState *state);
++    void onTranslateBlockStart(ExecutionSignal *, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onExecuteBlockStart(S2EExecutionState *state, uint64_t pc);
++    void onTranslateBlockComplete(S2EExecutionState *state, TranslationBlock *tb, uint64_t last_pc);
++    void onModuleTranslateBlockComplete(S2EExecutionState *state, const ModuleDescriptor &module,
++                                         TranslationBlock *tb, uint64_t last_pc);
++    //void onUpdateStates(S2EExecutionState *currentState, const klee::StateSet &addedStates,
++    //                    const klee::StateSet &removedStates);
++
++    void myFunctionCallMonitor(S2EExecutionState *state, FunctionMonitorState *fns);
++    void myFunctionRetMonitor(S2EExecutionState *state);
++};
++
++} // namespace coverage
++} // namespace plugins
++} // namespace s2e
++
++#endif // S2E_PLUGINS_MYTRACER_H
+diff --git a/src/s2e/Plugins/MyPlugins/MyVmi.cpp b/src/s2e/Plugins/MyPlugins/MyVmi.cpp
+new file mode 100644
+index 0000000..122193b
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MyVmi.cpp
+@@ -0,0 +1,204 @@
++///
++/// Copyright (C) 2010-2015, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#include <s2e/cpu.h>
++
++#include <s2e/ConfigFile.h>
++#include <s2e/S2E.h>
++#include <s2e/Utils.h>
++
++#include <arpa/inet.h>
++
++#include "MyVmi.h"
++
++namespace s2e {
++namespace plugins {
++
++S2E_DEFINE_PLUGIN(MyVmi, "My Virtual Machine Introspection", "MyVmi");
++
++void MyVmi::initialize() {
++    // TODO: Read symbol table from Linux kernel
++    s2e()->getCorePlugin()->onTranslateBlockStart.connect(sigc::mem_fun(*this, &MyVmi::onTranslateBlockStart));
++}
++
++void MyVmi::onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++                                          uint64_t pc) {
++    // Hook to get address of sk struct
++    // hook the next translation block of socket lookup
++    if (pc == 0xffffffff817901d3 || pc == 0xffffffff817901e8) {
++        signal->connect(sigc::mem_fun(*this, &MyVmi::afterSocketLookup));
++    }
++
++    // Hook to get address of server ISN
++    // hook the next translation block of request sock allocation
++    if (pc == 0xffffffff8178062e) {
++        signal->connect(sigc::mem_fun(*this, &MyVmi::afterRequestSockAllocation));
++    }
++    /*
++    // hook the next translation block of synack skb allocation
++    if (pc == 0xffffffff817868f3) {
++        signal->connect(sigc::mem_fun(*this, &MyVmi::afterSynAckSkbAllocation));
++    }
++    // hook the next translation block of synack seq assignment
++    if (pc == 0xffffffff81786bc0) {
++        signal->connect(sigc::mem_fun(*this, &MyVmi::afterSynAckSeqAssignment));
++    }
++    */
++
++    // Hook to get address of newly created full socket
++    // hook the next translation block of full socket allocation
++    if (pc == 0xffffffff8178f553) {
++        signal->connect(sigc::mem_fun(*this, &MyVmi::afterFullSocketAllocation));
++    }
++}
++
++void MyVmi::afterSocketLookup(S2EExecutionState *state, uint64_t pc) {
++    // get socket address
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    if (!state->regs()->read(CPU_OFFSET(regs[15]), &plgState->m_sock_addr, sizeof(plgState->m_sock_addr), false)) {
++        assert(false && "sk is symbolic.");
++        return;
++    }  
++    getDebugStream(state) << "sk: " << hexval(plgState->m_sock_addr) << "\n";
++}
++
++void MyVmi::afterRequestSockAllocation(S2EExecutionState *state, uint64_t pc) {
++    // get request sock address
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    if (!state->regs()->read(CPU_OFFSET(regs[15]), &plgState->m_reqsock_addr, sizeof(plgState->m_reqsock_addr), false)) {
++        assert(false && "request sock is symbolic.");
++        return;
++    }  
++    getDebugStream(state) << "req: " << hexval(plgState->m_reqsock_addr) << "\n";
++    return;
++}
++
++void MyVmi::afterSynAckSkbAllocation(S2EExecutionState *state, uint64_t pc) {
++    // get request sock address
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    if (!state->regs()->read(CPU_OFFSET(regs[R_EAX]), &plgState->m_synack_skb_addr, sizeof(plgState->m_synack_skb_addr), false)) {
++        assert(false && "synack skb is symbolic.");
++        return;
++    }  
++    getDebugStream(state) << "synack skb: " << hexval(plgState->m_synack_skb_addr) << "\n";
++    return;
++}
++
++void MyVmi::afterSynAckSeqAssignment(S2EExecutionState *state, uint64_t pc) {
++    // get sequence number in SYN-ACK packet
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    assert(plgState->m_synack_skb_addr);
++    
++    int cb_offset = 40; // cb offset in sk_buff
++    int data_offset = 208;  // data offset in sk_buff
++    uint32_t cb_seq;
++    uint32_t th_seq;
++
++    if (!state->mem()->read(plgState->m_synack_skb_addr + cb_offset, &cb_seq, sizeof(cb_seq))) {
++        getWarningsStream(state) << "ERROR: couldn't read cb->seq " << hexval(plgState->m_synack_skb_addr + cb_offset) << "\n";
++        return;
++    }
++    getDebugStream(state) << "synack skb cb->seq: " << hexval(cb_seq) << ", address: " << hexval(plgState->m_synack_skb_addr + cb_offset) << "\n";
++
++    if (!state->mem()->read(plgState->m_synack_skb_addr + data_offset, &plgState->m_synack_data_addr, sizeof(plgState->m_synack_data_addr))) {
++        getWarningsStream(state) << "ERROR: couldn't read sk_buff->data " << hexval(plgState->m_synack_skb_addr + data_offset) << "\n";
++        return;
++    }
++    getDebugStream(state) << "synack skb data: " << hexval(plgState->m_synack_data_addr) << ", address: " << hexval(plgState->m_synack_skb_addr + data_offset) << "\n";
++
++    if (!state->mem()->read(plgState->m_synack_data_addr + 4, &th_seq, sizeof(th_seq))) {
++        getWarningsStream(state) << "ERROR: couldn't read th->seq " << hexval(plgState->m_synack_data_addr + 4) << "\n";
++        return;
++    }
++    getDebugStream(state) << "synack skb th->seq: " << hexval(th_seq) << ", address: " << hexval(plgState->m_synack_data_addr + 4) << "\n";
++
++    return;
++}
++
++void MyVmi::afterFullSocketAllocation(S2EExecutionState *state, uint64_t pc) {
++    // get full socket address
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    if (!state->regs()->read(CPU_OFFSET(regs[R_EBX]), &plgState->m_sock_addr, sizeof(plgState->m_sock_addr), false)) {
++        assert(false && "full socket is symbolic.");
++        return;
++    }  
++    getDebugStream(state) << "full sk: " << hexval(plgState->m_sock_addr) << "\n";
++    return;
++}
++
++target_ulong MyVmi::getSockAddr(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    return plgState->m_sock_addr;
++}
++
++target_ulong MyVmi::getRequestSockAddr(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    return plgState->m_reqsock_addr;
++}
++
++int MyVmi::readSocketState(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++
++    target_ulong sock_addr = 0;
++
++    if (plgState->m_fullsock_addr)
++        sock_addr = plgState->m_fullsock_addr;
++    if (plgState->m_reqsock_addr)
++        sock_addr = plgState->m_reqsock_addr;
++    else if (plgState->m_sock_addr)
++        sock_addr = plgState->m_sock_addr;
++
++    if (!sock_addr) 
++        return 0;
++
++    int offset = 18;  // offset to sk_state
++    unsigned char sk_state;
++    if (!state->mem()->read(sock_addr + offset, &sk_state, sizeof(sk_state))) {
++        getWarningsStream(state) << "ERROR: couldn't read sk_state " << hexval(sock_addr + offset) << "\n";
++        return 255;
++    }
++    //getDebugStream(state) << "sk_state: " << int(sk_state) << "\n";
++    return sk_state;
++}
++
++void MyVmi::reset(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(MyVmiState, state);
++    plgState->reset();
++}
++
++
++/*
++ * MyVmiState
++ */
++
++MyVmiState::MyVmiState() {
++    m_sock_addr = 0;
++    m_reqsock_addr = 0;
++    m_fullsock_addr = 0;
++    m_synack_skb_addr = 0;
++    m_synack_data_addr = 0;
++}
++
++MyVmiState::~MyVmiState() {
++}
++
++MyVmiState *MyVmiState::clone() const {
++    return new MyVmiState(*this);
++}
++
++PluginState *MyVmiState::factory(Plugin *p, S2EExecutionState *s) {
++    return new MyVmiState();
++}
++
++void MyVmiState::reset() {
++    m_sock_addr = 0;
++    m_reqsock_addr = 0;
++    m_fullsock_addr = 0;
++}
++
++} // namespace plugins
++} // namespace s2e
+diff --git a/src/s2e/Plugins/MyPlugins/MyVmi.h b/src/s2e/Plugins/MyPlugins/MyVmi.h
+new file mode 100644
+index 0000000..c3579bc
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/MyVmi.h
+@@ -0,0 +1,65 @@
++///
++/// Copyright (C) 2010-2013, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#ifndef S2E_PLUGINS_MYVMI_H
++#define S2E_PLUGINS_MYVMI_H
++
++#include <s2e/CorePlugin.h>
++#include <s2e/Plugin.h>
++#include <s2e/S2EExecutionState.h>
++#include <s2e/S2EExecutor.h>
++#include <s2e/Synchronization.h>
++
++namespace s2e {
++namespace plugins {
++
++
++class MyVmi : public Plugin {
++    S2E_PLUGIN
++public:
++    MyVmi(S2E *s2e) : Plugin(s2e) {
++    }
++
++    void initialize();
++
++    target_ulong getRequestSockAddr(S2EExecutionState *state);
++    target_ulong getSockAddr(S2EExecutionState *state);
++    int readSocketState(S2EExecutionState *state);
++
++    void reset(S2EExecutionState *state);
++
++private:
++    void onTranslateBlockStart(ExecutionSignal *, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++
++    void afterSocketLookup(S2EExecutionState *state, uint64_t pc);
++    void afterRequestSockAllocation(S2EExecutionState *state, uint64_t pc);
++    void afterSynAckSkbAllocation(S2EExecutionState *state, uint64_t pc);
++    void afterSynAckSeqAssignment(S2EExecutionState *state, uint64_t pc);
++    void afterFullSocketAllocation(S2EExecutionState *state, uint64_t pc);
++};
++
++class MyVmiState : public PluginState {
++public:
++    MyVmiState();
++    virtual ~MyVmiState();
++
++    virtual MyVmiState *clone() const;
++    static PluginState *factory(Plugin *p, S2EExecutionState *s);
++
++    void reset();
++
++    target_ulong m_sock_addr;
++    target_ulong m_reqsock_addr;
++    target_ulong m_synack_skb_addr;
++    target_ulong m_synack_data_addr;
++    target_ulong m_fullsock_addr;
++};
++
++} // namespace plugins
++} // namespace s2e
++
++#endif // S2E_PLUGINS_MYVMI_H
+diff --git a/src/s2e/Plugins/MyPlugins/TCPSymbolizer.cpp b/src/s2e/Plugins/MyPlugins/TCPSymbolizer.cpp
+new file mode 100644
+index 0000000..ce38feb
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/TCPSymbolizer.cpp
+@@ -0,0 +1,487 @@
++///
++/// Copyright (C) 2010-2015, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#include <s2e/cpu.h>
++
++#include <s2e/ConfigFile.h>
++#include <s2e/S2E.h>
++#include <s2e/Utils.h>
++
++#include <arpa/inet.h>
++
++#include "TCPSymbolizer.h"
++
++#define SERVER_PORT 5555
++
++namespace s2e {
++namespace plugins {
++
++//S2E_DEFINE_PLUGIN(TCPSymbolizer, "Symbolize TCP packet header fields.", "TCPSymbolizer", "BaseInstructions", "ModuleExecutionDetector", "FunctionMonitor", "TranslationBlockTracer", "MemoryTracer", "BranchCoverage");
++S2E_DEFINE_PLUGIN(TCPSymbolizer, "Symbolize TCP packet header fields.", "TCPSymbolizer", "BaseInstructions", "ModuleExecutionDetector", "FunctionMonitor", "BranchCoverage", "MyDebugger", "TestCaseGenerator", "MyVmi");
++
++void TCPSymbolizer::initialize() {
++    m_base = s2e()->getPlugin<BaseInstructions>();
++    m_monitor = static_cast<FunctionMonitor *>(s2e()->getPlugin("FunctionMonitor"));
++
++    m_memrange = static_cast<MemRangeDetector *>(s2e()->getPlugin("MemRangeDetector"));
++
++    auto cfg = s2e()->getConfig();
++
++    m_concretePacketCounter = cfg->getInt(getConfigKey() + ".concretePacketCounter");
++    m_symbolicPacketCounter = cfg->getInt(getConfigKey() + ".symbolicPacketCounter");
++    m_optionsLen = cfg->getInt(getConfigKey() + ".TCPOptionsLength");
++    m_concolicOptions = cfg->getBool(getConfigKey() + ".concolicOptions");
++    getDebugStream() << "concolicOptions = " << m_concolicOptions << "\n";
++
++    // TODO: Read symbol table from Linux kernel
++
++    s2e()->getCorePlugin()->onTranslateBlockStart.connect(sigc::mem_fun(*this, &TCPSymbolizer::onTranslateBlockStart));
++
++    s2e()->getCorePlugin()->onStateForkDecide.connect(sigc::mem_fun(*this, &TCPSymbolizer::onStateForkDecide));
++
++    //m_tbtracer = static_cast<TranslationBlockTracer *>(s2e()->getPlugin("TranslationBlockTracer"));
++    //m_memtracer = static_cast<MemoryTracer *>(s2e()->getPlugin("MemoryTracer"));
++    m_bcoverage = static_cast<BranchCoverage *>(s2e()->getPlugin("BranchCoverage"));
++    m_debugger = static_cast<MyDebugger *>(s2e()->getPlugin("MyDebugger"));
++    m_vmi = static_cast<MyVmi *>(s2e()->getPlugin("MyVmi"));
++
++    m_tcgen = static_cast<testcases::TestCaseGenerator *>(s2e()->getPlugin("TestCaseGenerator"));
++
++    m_genBadCsumCases = cfg->getBool(getConfigKey() + ".generateBadChecksumCases");
++}
++
++void TCPSymbolizer::onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++                                          uint64_t pc) {
++    if (!m_registered) {
++        // hook tcp_v4_rcv() function
++        uint64_t functionAddress = 0xffffffff8178ffa0;
++        FunctionMonitor::CallSignal *callSignal;
++        callSignal = m_monitor->getCallSignal(state, functionAddress, -1);
++        callSignal->connect(sigc::mem_fun(*this, &TCPSymbolizer::myFunctionCallMonitor));
++        getDebugStream(state) << "hooked tcp_v4_rcv.\n";
++
++        // hook tcp_done() function
++        uint64_t functionAddress2 = 0xffffffff817793a0;
++        FunctionMonitor::CallSignal *callSignal2;
++        callSignal2 = m_monitor->getCallSignal(state, functionAddress2, -1);
++        callSignal2->connect(sigc::mem_fun(*this, &TCPSymbolizer::myFunctionCallMonitor2));
++        getDebugStream(state) << "hooked tcp_done.\n";
++
++        // hook tcp_fin() function
++        uint64_t functionAddress3 = 0xffffffff81783b60;
++        FunctionMonitor::CallSignal *callSignal3;
++        callSignal3 = m_monitor->getCallSignal(state, functionAddress3, -1);
++        callSignal3->connect(sigc::mem_fun(*this, &TCPSymbolizer::myFunctionCallMonitor3));
++        getDebugStream(state) << "hooked tcp_fin.\n";
++
++        // hook tcp_parse_options
++        uint64_t functionAddress4 = 0xffffffff8177d6a0;
++        FunctionMonitor::CallSignal *callSignal4;
++        callSignal4 = m_monitor->getCallSignal(state, functionAddress4, -1);
++        callSignal4->connect(sigc::mem_fun(*this, &TCPSymbolizer::myFunctionCallMonitor_tcp_parse_options));
++        getDebugStream(state) << "hooked tcp_parse_options.\n";
++
++        m_registered = true;
++    } 
++
++    // Hook to symbolize server ISN
++    if (m_symbolicPacketCounter > 0) {
++        // hook the next translation block of server ISN assignment
++        if (pc == 0xffffffff817806b6 || pc == 0xffffffff81780764 || pc == 0xffffffff817808cc || pc == 0xffffffff817808ea) {
++            signal->connect(sigc::mem_fun(*this, &TCPSymbolizer::afterServerISNAssignment));
++        }
++    }
++
++    // Hook to generate checksum-failed test cases
++    if (m_genBadCsumCases) {
++        if (pc == 0xffffffff81790145 || pc == 0xffffffff8179014f) {
++            // tcp_ipv4.c:1624
++            signal->connect(sigc::mem_fun(*this, &TCPSymbolizer::generateChecksumFailedTestCase));
++        }
++        if (pc == 0xffffffff8178f050) {
++            // tcp_ipv4.c:1406
++            signal->connect(sigc::mem_fun(*this, &TCPSymbolizer::generateChecksumFailedTestCase));
++        }
++        if (pc == 0xffffffff81784d00) {
++            // tcp_input.c:5489
++            signal->connect(sigc::mem_fun(*this, &TCPSymbolizer::generateChecksumFailedTestCase));
++        }
++        if (pc == 0xffffffff81784b2f) {
++            // tcp_input.c:5533
++            signal->connect(sigc::mem_fun(*this, &TCPSymbolizer::generateChecksumFailedTestCase));
++        }
++    }
++
++    if (pc == 0xffffffff81783b8e) {
++        // going to set TCP state to TCP_CLOSE_WAIT
++        signal->connect(sigc::mem_fun(*this, &TCPSymbolizer::onSetTCPStateCloseWait));
++    }
++}
++
++void TCPSymbolizer::onSetTCPStateCloseWait(S2EExecutionState *state, uint64_t pc) {
++    // we are in TCP_CLOSE_WAIT state, terminate the state
++    // terminate state
++    getDebugStream(state) << "tcp_set_state(sk, TCP_CLOSE_WAIT). Killed state.\n";
++    s2e()->getExecutor()->terminateStateAtFork(*state);
++    state->zombify();
++
++    // Killed current state
++    if (state == g_s2e_state) {
++        state->regs()->write<int>(CPU_OFFSET(exception_index), EXCP_SE);
++        throw CpuExitException();
++    }
++}
++
++void TCPSymbolizer::generateChecksumFailedTestCase(S2EExecutionState *state, uint64_t pc) {
++    // imitate the output of a normal "reached instruction/edge of interest" case
++    std::stringstream ss;
++    if (pc == 0xffffffff81790145 || pc == 0xffffffff8179014f) {
++        ss << "Reached drop edge of interest: 0xffffffff817900be->0xffffffff817900c4";
++    } else if (pc == 0xffffffff8178f050) {
++        ss << "Reached drop edge of interest: 0xffffffff8178f011->0xffffffff8178f013";
++    } else if (pc == 0xffffffff81784d00) {
++        ss << "Reached drop edge of interest: 0xffffffff81784cfa->0xffffffff81784a30";
++    } else if (pc == 0xffffffff81784b2f) {
++        ss << "Reached drop edge of interest: 0xffffffff81784a2a->0xffffffff81784a30";
++    }
++    int sk_state = m_vmi->readSocketState(state);
++    getDebugStream(state) << ss.str() << "\n";
++    getDebugStream(state) << "Socket state: " << sk_state << "\n";
++
++    m_debugger->dumpAcceptPointsReached(state);
++    if (pc == 0xffffffff81790145 || pc == 0xffffffff8179014f) {
++        getDebugStream(state) << "Drop points reached: 0xffffffff817900be->0xffffffff817900c4\n";
++    } else if (pc == 0xffffffff8178f050) {
++        getDebugStream(state) << "Drop points reached: 0xffffffff8178f011->0xffffffff8178f013\n";
++    } else if (pc == 0xffffffff81784d00) {
++        getDebugStream(state) << "Drop points reached: 0xffffffff81784cfa->0xffffffff81784a30\n";
++    } else if (pc == 0xffffffff81784b2f) {
++        getDebugStream(state) << "Drop points reached: 0xffffffff81784a2a->0xffffffff81784a30\n";
++    }
++
++    state->dumpQuerySMTv2(getDebugStream(state));
++    getDebugStream(state) << "Terminating state early: bad checksum case.\n";
++    m_tcgen->generateTestCases(state, "checksum failed", testcases::TC_LOG);
++}
++
++void TCPSymbolizer::myFunctionCallMonitor(S2EExecutionState *state, FunctionMonitorState *fns) {
++    DECLARE_PLUGINSTATE(TCPSymbolizerState, state);
++    getDebugStream(state) << "Entering tcp_v4_rcv. " << (plgState->m_concretePacketIndex + plgState->m_symbolicPacketIndex - 1) << "\n";
++
++    // reset the sk and req pointers
++    m_vmi->reset(state);
++
++    // Fork the current state
++#if 0
++    if (m_firstTime) {
++        s2e()->getExecutor()->forkAndSave();
++        m_firstTime = false;
++    }
++#endif
++
++    // extract TCP header 
++    target_ulong sk_buff;
++    if (!state->regs()->read(CPU_OFFSET(regs[R_EDI]), &sk_buff, sizeof(sk_buff), false)) {
++        getWarningsStream(state) << "ERROR: symbolic argument was passed to tcp_v4_rcv.\n";
++        return;
++    }  
++    getDebugStream(state) << "sk_buff: " << hexval(sk_buff) << "\n";
++
++    int offset = 208;  // offset to sk_buff->data, this could change
++    //int offset = 172;  // offset to sk_buff->data, this could change
++    target_ulong sk_buff_data;
++    //for (offset = 0; offset < 1024; offset++) {
++    if (!state->mem()->read(sk_buff + offset, &sk_buff_data, sizeof(sk_buff_data))) {
++        getWarningsStream(state) << "ERROR: couldn't read memory " << hexval(sk_buff + offset) << "\n";
++        return;
++    }
++    getDebugStream(state) << "offset: " << offset << ", sk_buff->data: " << hexval(sk_buff_data) << "\n";
++    //}
++
++    uint16_t sport, dport;
++    if (!state->mem()->read(sk_buff_data, &sport, sizeof(sport))) {
++        getWarningsStream(state) << "ERROR: couldn't read src port " << hexval(sk_buff_data) << "\n";
++        return;
++    }
++    sport = ntohs(sport);
++    if (!state->mem()->read(sk_buff_data + 2, &dport, sizeof(dport))) {
++        getWarningsStream(state) << "ERROR: couldn't read dst port " << hexval(sk_buff_data + 2) << "\n";
++        return;
++    }
++    dport = ntohs(dport);
++    getDebugStream(state) << "TCP src port: " << sport << ", dst port: " << dport << "\n";
++
++    uint32_t seq_num;
++    if (!state->mem()->read(sk_buff_data + 4, &seq_num, sizeof(seq_num))) {
++        getWarningsStream(state) << "ERROR: couldn't read seq num " << hexval(sk_buff_data + 4) << "\n";
++        return;
++    }
++    getDebugStream(state) << "TCP seq num (network order): " << hexval(seq_num) << "\n";
++
++    if (dport != SERVER_PORT) {
++        return;
++    }
++
++    // send concrete packets first, then symbolic packets
++    if (plgState->m_concretePacketIndex <= m_concretePacketCounter) {
++        plgState->m_concretePacketIndex++;
++    } else {
++        if (plgState->m_symbolicPacketIndex <= m_symbolicPacketCounter) {
++            // always run with klee
++            //m_base->alwaysKlee(state, 1);
++
++            // symbolize TCP packet header fields
++            m_base->makeSymbolic(state, sk_buff_data + 4, 4, "tcp_seq_num" + std::to_string(plgState->m_symbolicPacketIndex), true);
++            m_base->makeSymbolic(state, sk_buff_data + 8, 4, "tcp_ack_num" + std::to_string(plgState->m_symbolicPacketIndex), true);
++            m_base->makeSymbolic(state, sk_buff_data + 12, 1, "tcp_doff_reserved_flags" + std::to_string(plgState->m_symbolicPacketIndex), true);
++            m_base->makeSymbolic(state, sk_buff_data + 13, 1, "tcp_flags" + std::to_string(plgState->m_symbolicPacketIndex), true);
++            m_base->makeSymbolic(state, sk_buff_data + 14, 2, "tcp_win" + std::to_string(plgState->m_symbolicPacketIndex), true);
++            //m_base->makeSymbolic(state, sk_buff_data + 16, 2, "tcp_csum" + std::to_string(plgState->m_symbolicPacketIndex), true);
++            m_base->makeSymbolic(state, sk_buff_data + 18, 2, "tcp_urg_ptr" + std::to_string(plgState->m_symbolicPacketIndex), true);
++            if (m_optionsLen > 0) {
++                m_base->makeSymbolic(state, sk_buff_data + 20, m_optionsLen, "tcp_options" + std::to_string(plgState->m_symbolicPacketIndex), m_concolicOptions);
++            }
++    
++            getDebugStream(state) << "TCP packet header symbolized.\n";
++            plgState->m_symbolicPacketIndex++;
++    
++            // Monitor memory access
++            //s2e()->getCorePlugin()->onBeforeSymbolicDataMemoryAccess.connect(
++            //        sigc::mem_fun(*this, &TCPSymbolizer::onBeforeSymbolicDataMemoryAccess));
++            //s2e()->getCorePlugin()->onAfterSymbolicDataMemoryAccess.connect(
++            //        sigc::mem_fun(*this, &TCPSymbolizer::onAfterSymbolicDataMemoryAccess));
++            //s2e()->getCorePlugin()->onBeforeConcreteDataMemoryAccess.connect(
++            //        sigc::mem_fun(*this, &TCPSymbolizer::onBeforeConcreteDataMemoryAccess));
++            //s2e()->getCorePlugin()->onConcreteDataMemoryAccess.connect(
++            //        sigc::mem_fun(*this, &TCPSymbolizer::onConcreteDataMemoryAccess));
++            //state->setTainting(true);
++            
++            // slow down clock
++            //*g_sqi.exec.clock_scaling_factor = 10000;
++
++            //state->setStateSwitchForbidden(true);
++        } 
++    }
++
++    //m_tbtracer->enableTracing();
++    //m_memtracer->connectMemoryTracing();
++    m_bcoverage->enableTracing(state);
++    //m_debugger->enable(state);
++
++    FUNCMON_REGISTER_RETURN(state, fns, TCPSymbolizer::myFunctionRetMonitor)
++}
++
++void TCPSymbolizer::myFunctionRetMonitor(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(TCPSymbolizerState, state);
++    getDebugStream(state) << "Leaving tcp_v4_rcv. " << (plgState->m_concretePacketIndex + plgState->m_symbolicPacketIndex - 2) << "\n";
++
++    int sk_state = m_vmi->readSocketState(state);
++    getDebugStream(state) << "Socket state: " << sk_state << "\n";
++
++    //m_tbtracer->disableTracing();
++    //m_memtracer->disconnectMemoryTracing();
++    m_bcoverage->disableTracing(state);
++    //m_debugger->disable(state);
++
++    // WZJ: concretize all symbolic variables?
++    
++    m_debugger->dumpAcceptAndDropPointsReached(state);
++    state->dumpQuerySMTv2(getDebugStream(state));
++
++    // terminate the state if it has reached any drop point
++    if (m_debugger->hasReachedDropPoints(state)) {
++        s2e()->getExecutor()->terminateStateEarly(*state, "has reached a drop point.");
++    }
++    // terminate the state when packet counter count down to -1 (symbolic packet is done)
++    else if (plgState->m_concretePacketIndex > m_concretePacketCounter && plgState->m_symbolicPacketIndex > m_symbolicPacketCounter) {
++        s2e()->getExecutor()->terminateStateEarly(*state, "has received enough packets.");
++    }
++
++    // enable interrupts (doesn't work)
++    //state->regs()->write(CPU_OFFSET(timer_interrupt_disabled), 0);
++    //state->regs()->write(CPU_OFFSET(all_apic_interrupts_disabled), 0);
++    
++    //if (plgState->m_symbolicPacketIndex > 1) {
++    //    state->dumpQuerySMTv2(getDebugStream(state));
++    //    m_tcgen->generateTestCases(state, "exit tcp_v4_rcv", testcases::TC_LOG);
++    //}
++}
++
++void TCPSymbolizer::myFunctionCallMonitor2(S2EExecutionState *state, FunctionMonitorState *fns) {
++    getDebugStream(state) << "Connection dead. Reached tcp_done.\n";
++    s2e()->getExecutor()->terminateStateAtFork(*state);
++    state->zombify();
++
++    // Killed current state
++    if (state == g_s2e_state) {
++        state->regs()->write<int>(CPU_OFFSET(exception_index), EXCP_SE);
++        throw CpuExitException();
++    }
++}
++
++void TCPSymbolizer::myFunctionCallMonitor3(S2EExecutionState *state, FunctionMonitorState *fns) {
++    getDebugStream(state) << "Connection almost dead. Reached tcp_fin.\n";
++    s2e()->getExecutor()->terminateStateAtFork(*state);
++    state->zombify();
++
++    // Killed current state
++    if (state == g_s2e_state) {
++        state->regs()->write<int>(CPU_OFFSET(exception_index), EXCP_SE);
++        throw CpuExitException();
++    }
++}
++
++void TCPSymbolizer::myFunctionCallMonitor_tcp_parse_options(S2EExecutionState *state, FunctionMonitorState *fns) {
++    getDebugStream(state) << "Entering tcp_parse_options.\n";
++
++    m_bcoverage->resetTCPOptCounters(state);
++
++    //FUNCMON_REGISTER_RETURN(state, fns, TCPSymbolizer::myFunctionRetMonitor_tcp_parse_options)
++}
++
++void TCPSymbolizer::myFunctionRetMonitor_tcp_parse_options(S2EExecutionState *state) {
++    getDebugStream(state) << "Leaving tcp_parse_options.\n";
++}
++
++void TCPSymbolizer::onStateForkDecide(S2EExecutionState *state, bool *doFork) {
++    uint64_t pc = state->regs()->getPc();
++
++    if (!m_memrange->isInRange(pc)) {
++        *doFork = false;
++    }
++
++    DECLARE_PLUGINSTATE(TCPSymbolizerState, state);
++    if (plgState->m_concretePacketIndex <= m_concretePacketCounter || plgState->m_symbolicPacketIndex == 1) {
++        *doFork = false;
++    }
++}
++
++// have to register this signal in order to have onBeforeConcreteDataMemoryAccess, this is some stupid hack...
++void TCPSymbolizer::onBeforeSymbolicDataMemoryAccess(S2EExecutionState *state, klee::ref<klee::Expr> addr,
++                                                     klee::ref<klee::Expr> val, bool isWrite) {
++
++    //getDebugStream(state) << "TCPSymbolizer::onBeforeSymbolicDataMemoryAccess.\n";
++    
++}
++
++void TCPSymbolizer::onAfterSymbolicDataMemoryAccess(S2EExecutionState *state, klee::ref<klee::Expr> vaddr, 
++                                                    klee::ref<klee::Expr> haddr, klee::ref<klee::Expr> value, unsigned flags) {
++#if 0
++    uint64_t pc = state->regs()->getPc();
++    if (!m_memrange->isInRange(pc)) 
++        return;
++
++    if (!(flags & MEM_TRACE_FLAG_WRITE)) {
++        bool isAddrCste = isa<klee::ConstantExpr>(vaddr);
++        bool isValCste = isa<klee::ConstantExpr>(value);
++        bool isHostAddrCste = isa<klee::ConstantExpr>(haddr);
++
++        if (!isValCste) 
++            return;
++
++        uint64_t concreteAddress = 0xdeadbeef;
++        uint64_t concreteValue = 0xdeadbeef;
++
++        uint64_t cvaddr = isAddrCste ? cast<klee::ConstantExpr>(vaddr)->getZExtValue(64) : concreteAddress;
++        uint64_t cvalue = isValCste ? cast<klee::ConstantExpr>(value)->getZExtValue(64) : concreteValue;
++        uint64_t csize = klee::Expr::getMinBytesForWidth(value->getWidth());
++        uint64_t chaddr = isHostAddrCste ? cast<klee::ConstantExpr>(haddr)->getZExtValue(64) : concreteAddress;
++
++        uint64_t esp = state->regs()->getSp();
++        uint64_t ebp = state->regs()->getBp();
++
++        getDebugStream(state) << "TCPSymbolizer::onAfterSymbolicDataMemoryAccess: pc = " << hexval(pc) << ", virtual address = " << hexval(cvaddr) << ", host address = " << hexval(chaddr) << ", value = " << hexval(cvalue) << ", size = " << hexval(csize) << ", flags = " << hexval(flags) << ", esp = " << hexval(esp) << ", ebp = " << hexval(ebp) << "\n";
++    }
++#endif
++}
++
++void TCPSymbolizer::onBeforeConcreteDataMemoryAccess(S2EExecutionState *state, uint64_t address, uint64_t value, uint8_t size, unsigned flags) {
++#if 0
++    uint64_t pc = state->regs()->getPc();
++    if (!m_memrange->isInRange(pc)) 
++        return;
++
++    if (!(flags & MEM_TRACE_FLAG_WRITE)) {
++        getDebugStream(state) << "TCPSymbolizer::onBeforeConcreteDataMemoryAccess: address = " << hexval(address) << ", value = " << hexval(value) << ", size = " << hexval(size) << ", flags = " << hexval(flags) << "\n";
++        // taint
++        m_base->taint(state, address, size, "");
++    }
++#endif
++}
++
++void TCPSymbolizer::onConcreteDataMemoryAccess(S2EExecutionState *state, uint64_t address, uint64_t value, uint8_t size, unsigned flags) {
++//    uint64_t pc = state->regs()->getPc();
++//    if (!m_memrange->isInRange(pc)) 
++//        return;
++
++    if (!(flags & MEM_TRACE_FLAG_WRITE)) {
++        uint64_t esp = state->regs()->getSp();
++        uint64_t ebp = state->regs()->getBp();
++
++        getDebugStream(state) << "TCPSymbolizer::onConcreteDataMemoryAccess: address = " << hexval(address) << ", value = " << hexval(value) << ", size = " << hexval(size) << ", flags = " << hexval(flags) << ", esp = " << hexval(esp) << ", ebp = " << hexval(ebp) << "\n";
++        /*
++        if (m_reqsock_addr && address == m_reqsock_addr + 308) { 
++            getDebugStream(state) << "TCPSymbolizer::onConcreteDataMemoryAccess: address = " << hexval(address) << ", value = " << hexval(value) << ", size = " << hexval(size) << ", flags = " << hexval(flags) << ", esp = " << hexval(esp) << ", ebp = " << hexval(ebp) << "\n";
++        }
++        if (m_synack_skb_addr && address == m_synack_skb_addr + 40) { 
++            getDebugStream(state) << "TCPSymbolizer::onConcreteDataMemoryAccess: address = " << hexval(address) << ", value = " << hexval(value) << ", size = " << hexval(size) << ", flags = " << hexval(flags) << ", esp = " << hexval(esp) << ", ebp = " << hexval(ebp) << "\n";
++        }
++        if (m_synack_data_addr && address == m_synack_data_addr + 4) { 
++            getDebugStream(state) << "TCPSymbolizer::onConcreteDataMemoryAccess: address = " << hexval(address) << ", value = " << hexval(value) << ", size = " << hexval(size) << ", flags = " << hexval(flags) << ", esp = " << hexval(esp) << ", ebp = " << hexval(ebp) << "\n";
++        }
++        */
++        // taint
++        //m_base->taint(state, address, size, "");
++    }
++}
++
++void TCPSymbolizer::afterServerISNAssignment(S2EExecutionState *state, uint64_t pc) {
++    // symbolize server ISN
++    target_ulong reqsock_addr = m_vmi->getRequestSockAddr(state);
++    assert(reqsock_addr);
++    
++    int offset = 308;  // offset to req->snt_isn, this could change
++    /*
++    uint32_t isn;
++    if (!state->mem()->read(plgState->m_reqsock_addr + offset, &isn, sizeof(isn))) {
++        getWarningsStream(state) << "ERROR: couldn't read req->snt_isn " << hexval(plgState->m_reqsock_addr + offset) << "\n";
++        return;
++    }
++    isn = ntohl(isn);
++    getDebugStream(state) << "req->snt_isn: " << hexval(isn) << "\n";
++    */
++
++    m_base->makeSymbolic(state, reqsock_addr + offset, 4, "tcp_svr_isn", true);
++}
++
++int TCPSymbolizer::getPacketNum(S2EExecutionState *state) {
++    DECLARE_PLUGINSTATE(TCPSymbolizerState, state);
++    return plgState->m_concretePacketIndex + plgState->m_symbolicPacketIndex - 2;
++}
++
++/*
++ * TCPSymbolizerState
++ */
++
++TCPSymbolizerState::TCPSymbolizerState() {
++    m_concretePacketIndex = 1;
++    m_symbolicPacketIndex = 1;
++}
++
++TCPSymbolizerState::~TCPSymbolizerState() {
++}
++
++TCPSymbolizerState *TCPSymbolizerState::clone() const {
++    return new TCPSymbolizerState(*this);
++}
++
++PluginState *TCPSymbolizerState::factory(Plugin *p, S2EExecutionState *s) {
++    return new TCPSymbolizerState();
++}
++
++} // namespace plugins
++} // namespace s2e
+diff --git a/src/s2e/Plugins/MyPlugins/TCPSymbolizer.h b/src/s2e/Plugins/MyPlugins/TCPSymbolizer.h
+new file mode 100644
+index 0000000..940f259
+--- /dev/null
++++ b/src/s2e/Plugins/MyPlugins/TCPSymbolizer.h
+@@ -0,0 +1,106 @@
++///
++/// Copyright (C) 2010-2013, Dependable Systems Laboratory, EPFL
++/// All rights reserved.
++///
++/// Licensed under the Cyberhaven Research License Agreement.
++///
++
++#ifndef S2E_PLUGINS_TCPSYMBOLIZER_H
++#define S2E_PLUGINS_TCPSYMBOLIZER_H
++
++#include <s2e/CorePlugin.h>
++#include <s2e/Plugin.h>
++#include <s2e/Plugins/Coverage/TranslationBlockCoverage.h>
++#include <s2e/Plugins/ExecutionMonitors/FunctionMonitor.h>
++#include <s2e/Plugins/ExecutionTracers/TranslationBlockTracer.h>
++#include <s2e/Plugins/ExecutionTracers/MemoryTracer.h>
++#include <s2e/Plugins/ExecutionTracers/TestCaseGenerator.h>
++#include <s2e/Plugins/MyPlugins/MemRangeDetector.h>
++#include <s2e/Plugins/MyPlugins/BranchCoverage.h>
++#include <s2e/Plugins/MyPlugins/MyDebugger.h>
++#include <s2e/Plugins/MyPlugins/MyVmi.h>
++#include <s2e/S2EExecutionState.h>
++#include <s2e/S2EExecutor.h>
++#include <s2e/Synchronization.h>
++
++#include <klee/Internal/ADT/ImmutableSet.h>
++
++#include <unordered_map>
++
++namespace s2e {
++namespace plugins {
++
++
++class TCPSymbolizer : public Plugin {
++    S2E_PLUGIN
++public:
++    TCPSymbolizer(S2E *s2e) : Plugin(s2e) {
++        m_registered = false;
++    }
++
++    void initialize();
++
++    int getPacketNum(S2EExecutionState *state);
++
++private:
++    BaseInstructions *m_base;
++    FunctionMonitor *m_monitor;
++    
++    MemRangeDetector *m_memrange;
++
++    //TranslationBlockTracer *m_tbtracer;
++    //MemoryTracer *m_memtracer;
++    BranchCoverage *m_bcoverage;
++    MyDebugger *m_debugger;
++    MyVmi *m_vmi;
++
++    testcases::TestCaseGenerator *m_tcgen;
++
++    bool m_registered;
++    int m_concretePacketCounter;
++    int m_symbolicPacketCounter;
++    int m_optionsLen;
++    bool m_concolicOptions;
++    bool m_genBadCsumCases;
++
++    void onTranslateBlockStart(ExecutionSignal *, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void generateChecksumFailedTestCase(S2EExecutionState *state, uint64_t pc);
++
++    void myFunctionCallMonitor(S2EExecutionState *state, FunctionMonitorState *fns);
++    void myFunctionCallMonitor2(S2EExecutionState *state, FunctionMonitorState *fns);
++    void myFunctionCallMonitor3(S2EExecutionState *state, FunctionMonitorState *fns);
++    void myFunctionRetMonitor(S2EExecutionState *state);
++
++    void myFunctionCallMonitor_tcp_parse_options(S2EExecutionState *state, FunctionMonitorState *fns);
++    void myFunctionRetMonitor_tcp_parse_options(S2EExecutionState *state);
++
++    void onStateForkDecide(S2EExecutionState *state, bool *doFork);
++
++    void onBeforeSymbolicDataMemoryAccess(S2EExecutionState *state, klee::ref<klee::Expr> addr,
++                                          klee::ref<klee::Expr> val, bool isWrite);
++    void onAfterSymbolicDataMemoryAccess(S2EExecutionState *state, klee::ref<klee::Expr> vaddr, 
++                                          klee::ref<klee::Expr> haddr, klee::ref<klee::Expr> value, unsigned flags);
++    void onBeforeConcreteDataMemoryAccess(S2EExecutionState *state, uint64_t address, uint64_t value, uint8_t size, unsigned flags);
++    void onConcreteDataMemoryAccess(S2EExecutionState *state, uint64_t address, uint64_t value, uint8_t size, unsigned flags);
++
++    void afterServerISNAssignment(S2EExecutionState *state, uint64_t pc);
++
++    void onSetTCPStateCloseWait(S2EExecutionState *state, uint64_t pc);
++};
++
++class TCPSymbolizerState : public PluginState {
++public:
++    TCPSymbolizerState();
++    virtual ~TCPSymbolizerState();
++
++    virtual TCPSymbolizerState *clone() const;
++    static PluginState *factory(Plugin *p, S2EExecutionState *s);
++
++    unsigned m_concretePacketIndex; 
++    unsigned m_symbolicPacketIndex; 
++};
++
++} // namespace plugins
++} // namespace s2e
++
++#endif // S2E_PLUGINS_TCPSYMBOLIZER_H
+diff --git a/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.cpp b/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.cpp
+index 1452242..f57301b 100644
+--- a/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.cpp
++++ b/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.cpp
+@@ -236,7 +236,7 @@ void GuestCodeHooking::onExecuteBlockStart(S2EExecutionState *state, uint64_t pc
+     }
+ }
+ 
+-void GuestCodeHooking::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++void GuestCodeHooking::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb,
+                                            uint64_t pc, bool staticTarget, uint64_t targetPc) {
+     if (!m_monitor->initialized()) {
+         return;
+diff --git a/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.h b/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.h
+index 62807c5..74e3e69 100644
+--- a/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.h
++++ b/src/s2e/Plugins/OSMonitors/Support/GuestCodeHooking.h
+@@ -133,7 +133,7 @@ private:
+ 
+     void onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
+                              bool staticTarget, uint64_t targetPc);
+ 
+     void onExecuteBlockStart(S2EExecutionState *state, uint64_t pc, uint64_t hookAddress, bool directHook);
+diff --git a/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.cpp b/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.cpp
+index 97571da..7c50d9c 100644
+--- a/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.cpp
++++ b/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.cpp
+@@ -192,7 +192,7 @@ void ModuleExecutionDetector::onTranslateBlockStart(ExecutionSignal *signal, S2E
+     onModuleTranslateBlockStart.emit(signal, state, *currentModule, tb, pc);
+ }
+ 
+-void ModuleExecutionDetector::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state,
++void ModuleExecutionDetector::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state,
+                                                   TranslationBlock *tb, uint64_t endPc, bool staticTarget,
+                                                   uint64_t targetPc) {
+     auto currentModule = getCurrentDescriptor(state);
+@@ -213,7 +213,7 @@ void ModuleExecutionDetector::onTranslateBlockEnd(ExecutionSignal *signal, S2EEx
+     }
+ 
+     if (currentModule) {
+-        onModuleTranslateBlockEnd.emit(signal, state, *currentModule, tb, endPc, staticTarget, targetPc);
++        onModuleTranslateBlockEnd.emit(signal, signal2, state, *currentModule, tb, endPc, staticTarget, targetPc);
+     }
+ }
+ 
+diff --git a/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.h b/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.h
+index 7cb3803..2a4bbfe 100644
+--- a/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.h
++++ b/src/s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.h
+@@ -104,7 +104,7 @@ public:
+     /// \brief onModuleTranslateBlockEnd is emitted for each exit point of a
+     /// configured module's translation block.
+     ///
+-    sigc::signal<void, ExecutionSignal *, S2EExecutionState *, const ModuleDescriptor &, TranslationBlock *,
++    sigc::signal<void, ExecutionSignal *, EdgeSignal *, S2EExecutionState *, const ModuleDescriptor &, TranslationBlock *,
+                  uint64_t /* ending instruction pc */, bool /* static target is valid */,
+                  uint64_t /* static target pc */
+                  >
+@@ -143,7 +143,7 @@ private:
+ 
+     void onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc,
+                              bool staticTarget, uint64_t targetPc);
+ 
+     void onTranslateBlockComplete(S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
+diff --git a/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.cpp b/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.cpp
+index c8945fe..8adef8a 100644
+--- a/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.cpp
++++ b/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.cpp
+@@ -206,7 +206,7 @@ void WindowsMonitor::onTranslateBlockStart(ExecutionSignal *signal, S2EExecution
+     }
+ }
+ 
+-void WindowsMonitor::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++void WindowsMonitor::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb,
+                                          uint64_t endPc, bool staticTarget, uint64_t targetPc) {
+     /* Driver load is always a call instruction */
+     if (endPc == m_kernel.LoadDriverPc - m_kernel.KernelNativeBase + m_kernel.KernelLoadBase) {
+diff --git a/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.h b/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.h
+index 3f8c988..9527e10 100644
+--- a/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.h
++++ b/src/s2e/Plugins/OSMonitors/Windows/WindowsMonitor.h
+@@ -307,7 +307,7 @@ private:
+ 
+     void onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t endPc,
+                              bool staticTarget, uint64_t targetPc);
+ 
+     void onStateSwitch(S2EExecutionState *currentState, S2EExecutionState *nextState);
+diff --git a/src/s2e/Plugins/Searchers/CUPASearcher.cpp b/src/s2e/Plugins/Searchers/CUPASearcher.cpp
+index a89d250..ba2cd48 100644
+--- a/src/s2e/Plugins/Searchers/CUPASearcher.cpp
++++ b/src/s2e/Plugins/Searchers/CUPASearcher.cpp
+@@ -86,6 +86,8 @@ void CUPASearcher::initialize() {
+             m_classes.push_back(VULNERABILITY);
+         } else if (*it == "group") {
+             m_classes.push_back(GROUP);
++        } else if (*it == "targeted") {    // wzj
++            m_classes.push_back(TARGETED);
+         } else {
+             getWarningsStream() << "Unknown class " << *it;
+             exit(-1);
+@@ -151,6 +153,10 @@ klee::Searcher *CUPASearcher::createSearcher(unsigned level) {
+             case GROUP:
+                 searcher = new CUPASearcherGroupClass(this, level);
+                 break;
++            // wzj
++            case TARGETED:
++                searcher = new CUPASearcherTargetedClass(this, level);
++                break;
+             default:
+                 assert(false);
+         }
+@@ -526,7 +532,7 @@ void CUPAVulnerabilitySearcherClass::onFunctionCall(S2EExecutionState *state, Fu
+     plgState->pushRet(retPc);
+ }
+ 
+-void CUPAVulnerabilitySearcherClass::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state,
++void CUPAVulnerabilitySearcherClass::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state,
+                                                          TranslationBlock *tb, uint64_t pc, bool hasStaticTarget,
+                                                          uint64_t staticPc) {
+     if (tb->se_tb_type == TB_RET) {
+@@ -862,5 +868,180 @@ const std::vector<uint64_t> &CUPAVulnerabilitySearcherState::getRetStack() const
+     return m_retStack;
+ }
+ 
++// wzj
++CUPASearcherTargetedClass::CUPASearcherTargetedClass(CUPASearcher *plugin, unsigned level)
++    : CUPASearcherClass(plugin, level) {
++    m_targetIdx = 0;
++    m_threshold1 = 0;
++    m_threshold2 = 0;
++    initialize();
++}
++
++void CUPASearcherTargetedClass::initialize() {
++    ConfigFile *cfg = m_plg->s2e()->getConfig();
++
++    m_threshold1 = cfg->getInt(m_plg->getConfigKey() + ".threshold1");
++    m_threshold2 = cfg->getInt(m_plg->getConfigKey() + ".threshold2");
++    getDebugStream() << "threshold1: " << m_threshold1 << ", threshold2: " << m_threshold2 << "\n";
++
++    ConfigFile::integer_list addresses = cfg->getIntegerList(m_plg->getConfigKey() + ".criticalPcs");
++
++    /*
++    getDebugStream() << "criticalPcs:\n";
++    for (uint64_t address: addresses) {
++        m_criticalPcs.insert(address);
++        getDebugStream() << hexval(address) << "\n";
++    }
++    */
++
++    //CorePlugin *core = m_plg->s2e()->getCorePlugin();
++
++    //fork_conn = core->onStateFork.connect(sigc::mem_fun(*this, &CUPASearcherTargetedClass::onFork),
++    //                                      fsigc::signal_base::HIGH_PRIORITY);
++
++    //translate_block_start_conn = core->onTranslateBlockStart.connect(
++    //    sigc::mem_fun(*this, &CUPASearcherTargetedClass::onTranslateBlockStart));
++
++    // Set timestamp
++    //m_targets.push_back(0xffffffff8177d889);
++    //m_targetMemRangeStart.push_back(0xffffffff8177d73f);
++    //m_targetMemRangeEnd.push_back(0xffffffff8177d73f);
++    // PAWS check
++    //m_targets.push_back(0xffffffff817914f1);
++    //m_targetMemRangeStart.push_back(0xffffffff8177d73f);
++    //m_targetMemRangeEnd.push_back(0xffffffff8177d73f);
++
++    m_symbolizer = static_cast<TCPSymbolizer *>(m_plg->s2e()->getPlugin("TCPSymbolizer"));
++}
++
++void CUPASearcherTargetedClass::onFork(S2EExecutionState *state, const std::vector<S2EExecutionState *> &newStates,
++                                            const std::vector<klee::ref<klee::Expr>> &newConditions) {
++    /*
++    assert(newStates.size() == 2);
++    
++    uint64_t pc = state->regs()->getPc();
++
++    uint64_t nextPc[2];
++    if (!state->getStaticBranchTargets(&nextPc[0], &nextPc[1])) {
++        m_plg->getWarningsStream() << "Failed to get static branch targets at " << "\n";
++    }
++
++    m_plg->s2e()->getExecutor()->yieldState(*state);
++    */
++}
++
++void CUPASearcherTargetedClass::onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb,
++                                       uint64_t pc) {
++    /*
++    if (pc == m_targets[m_targetIdx]) {
++        m_plg->getWarningsStream() << "Target " << hexval(pc) << " reached.\n";
++        DECLARE_PLUGINSTATE_P(m_plg, CUPASearcherTargetedState, state);
++        plgState->setClass(m_targetIdx);
++        m_targetIdx++;
++        if (m_targetIdx >= m_targets.size()) {
++            translate_block_start_conn.disconnect();
++        }
++    }
++    */
++    if (pc == 0xffffffff8177d889 || pc == 0xffffffff817914f1) {
++        signal->connect(sigc::mem_fun(*this, &CUPASearcherTargetedClass::onTranslationBlockExecution));
++    }
++}
++
++void CUPASearcherTargetedClass::onTranslationBlockExecution(S2EExecutionState *state, uint64_t pc) {
++    if (pc == 0xffffffff8177d889) {
++        if (m_symbolizer->getPacketNum(state) == 1) {
++            // found Timestamp!
++            DECLARE_PLUGINSTATE_P(m_plg, CUPASearcherTargetedState, state);
++            m_plg->getWarningsStream() << "Found Timestamp in the first packet.\n";
++            plgState->setClass(1);
++            translate_block_start_conn.disconnect();
++        }
++    }
++    if (pc == 0xffffffff817914f1) {
++        m_plg->getWarningsStream() << "We are there!\n";
++    }
++}
++
++uint64_t CUPASearcherTargetedClass::getClass(S2EExecutionState *state) {
++    if (!g_s2e_state)
++        return 0;
++
++    /*
++    uint64_t memRangeStart, memRangeEnd;
++    if (m_targetIdx < m_targets.size()) {
++        memRangeStart = m_targetMemRangeStart[m_targetIdx];
++        memRangeEnd = m_targetMemRangeEnd[m_targetIdx];
++        uint64_t pc = state->regs()->getPc();
++        if (pc >= memRangeStart && pc <= memRangeEnd) {
++            return 255;
++        }
++        DECLARE_PLUGINSTATE_P(m_plg, CUPASearcherTargetedState, state);
++        if (plgState->getClass()) {
++            return plgState->getClass();
++        }
++    } 
++    DECLARE_PLUGINSTATE_P(m_plg, CUPASearcherTargetedState, state);
++    if (plgState->getClass()) {
++        return plgState->getClass();
++    }
++    */
++    /*
++    uint64_t pc = state->regs()->getPc();
++    getDebugStream(NULL) << "pc = " << hexval(pc) << "\n";
++    if (m_criticalPcs.find(pc) != m_criticalPcs.end()) {
++        return 255;
++    } 
++    */
++    int packetNum = m_symbolizer->getPacketNum(state);
++    getDebugStream(NULL) << "packetNum = " << packetNum << "\n";
++    return packetNum;
++    //return 0;
++}
++
++klee::ExecutionState &CUPASearcherTargetedClass::selectState() {
++    assert(!m_searchers.empty());
++    unsigned stateCount = g_s2e->fetchNextStateId();
++    getDebugStream(NULL) << "stateCount = " << stateCount << "\n";
++    int idx;
++    bool ok = false;
++    std::map<uint64_t, std::unique_ptr<klee::Searcher>>::iterator it;
++    while (!ok) {
++        idx = std::uniform_int_distribution<>(0, m_searchers.size() - 1)(m_rnd);
++        it = std::next(std::begin(m_searchers), idx);
++        getDebugStream(NULL) << "selectState(): packetNum = " << it->first << "\n";
++        if (stateCount >= m_threshold2) {
++            ok = true;
++        } else if (stateCount >= m_threshold1) {
++            if (it->first < 3)
++                ok = true;
++        } else {
++            if (it->first < 2)
++                ok = true;
++        }
++    }
++    getDebugStream(NULL) << "selectState packetNum = " << it->first << "\n";
++    return it->second->selectState();
++}
++
++/*
++ *
++ */
++CUPASearcherTargetedState::CUPASearcherTargetedState() {
++    m_class = 0;
++}
++
++CUPASearcherTargetedState::~CUPASearcherTargetedState() {
++}
++
++CUPASearcherTargetedState *CUPASearcherTargetedState::clone() const {
++    return new CUPASearcherTargetedState(*this);
++}
++
++PluginState *CUPASearcherTargetedState::factory(Plugin *p, S2EExecutionState *s) {
++    return new CUPASearcherTargetedState();
++}
++
++
+ } // namespace plugins
+ } // namespace s2e
+diff --git a/src/s2e/Plugins/Searchers/CUPASearcher.h b/src/s2e/Plugins/Searchers/CUPASearcher.h
+index f0edf20..f2f2008 100644
+--- a/src/s2e/Plugins/Searchers/CUPASearcher.h
++++ b/src/s2e/Plugins/Searchers/CUPASearcher.h
+@@ -14,6 +14,7 @@
+ #include <s2e/CorePlugin.h>
+ #include <s2e/Plugin.h>
+ #include <s2e/Plugins/ExecutionMonitors/FunctionMonitor.h>
++#include <s2e/Plugins/MyPlugins/TCPSymbolizer.h>
+ #include <s2e/Plugins/OSMonitors/Support/ModuleExecutionDetector.h>
+ #include <s2e/Plugins/OSMonitors/Support/ProcessExecutionDetector.h>
+ #include <s2e/Plugins/Searchers/MultiSearcher.h>
+@@ -83,7 +84,7 @@ public:
+     }
+ 
+ private:
+-    enum Classes { SEED, BATCH, PC, PAGEDIR, FORKCOUNT, PRIORITY, READCOUNT, RANDOM, VULNERABILITY, GROUP };
++    enum Classes { SEED, BATCH, PC, PAGEDIR, FORKCOUNT, PRIORITY, READCOUNT, RANDOM, VULNERABILITY, GROUP, TARGETED };
+ 
+     MultiSearcher *m_searchers;
+     klee::Searcher *m_top;
+@@ -283,7 +284,7 @@ private:
+     void onModuleLoad(S2EExecutionState *state, const ModuleDescriptor &module);
+     void onFunctionCall(S2EExecutionState *state, FunctionMonitorState *fns);
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc, //
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc, //
+                              bool hasStaticTarget, uint64_t staticPc);
+     void onReturnExecutionComplete(S2EExecutionState *state, uint64_t pc);
+ 
+@@ -445,6 +446,61 @@ protected:
+     }
+ };
+ 
++// wzj
++class CUPASearcherTargetedState : public PluginState {
++private:
++    int m_class;
++
++public:
++    CUPASearcherTargetedState();
++    virtual ~CUPASearcherTargetedState();
++
++    virtual CUPASearcherTargetedState *clone() const;
++    static PluginState *factory(Plugin *p, S2EExecutionState *s);
++
++    void setClass(int _class) {
++        m_class = _class;
++    }
++    int getClass() {
++        return m_class;
++    }
++};
++
++class CUPASearcherTargetedClass : public CUPASearcherClass {
++private:
++    void onFork(S2EExecutionState *state, const std::vector<S2EExecutionState *> &newStates,
++                const std::vector<klee::ref<klee::Expr>> &newConditions);
++    void onTranslateBlockStart(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc);
++    void onTranslationBlockExecution(S2EExecutionState *state, uint64_t pc);
++
++    sigc::connection fork_conn;
++    sigc::connection translate_block_start_conn;
++
++    size_t m_targetIdx;
++    std::vector<uint64_t> m_targets;
++    std::vector<uint64_t> m_targetMemRangeStart;
++    std::vector<uint64_t> m_targetMemRangeEnd;
++
++    std::unordered_set<uint64_t> m_criticalPcs;
++
++    TCPSymbolizer *m_symbolizer;
++
++    int m_threshold1, m_threshold2;
++
++public:
++    CUPASearcherTargetedClass(CUPASearcher *plugin, unsigned level);
++    virtual ~CUPASearcherTargetedClass() {
++        translate_block_start_conn.disconnect();
++    }
++
++	void initialize();
++
++protected:
++    virtual uint64_t getClass(S2EExecutionState *state);
++    virtual klee::ExecutionState &selectState();
++};
++
++
+ } // namespace plugins
+ } // namespace s2e
+ 
+diff --git a/src/s2e/Plugins/Searchers/MergingSearcher.cpp b/src/s2e/Plugins/Searchers/MergingSearcher.cpp
+index 7ce4c0f..dc1a8d1 100644
+--- a/src/s2e/Plugins/Searchers/MergingSearcher.cpp
++++ b/src/s2e/Plugins/Searchers/MergingSearcher.cpp
+@@ -96,8 +96,7 @@ bool MergingSearcher::empty() {
+ 
+ void MergingSearcher::suspend(S2EExecutionState *state) {
+     if (m_debug) {
+-        getDebugStream(NULL) << "MergingSearcher: "
+-                             << "suspending state " << state->getID() << "\n";
++        getDebugStream(NULL) << "suspending state " << state->getID() << "\n";
+     }
+ 
+     if (m_currentState == state) {
+@@ -112,8 +111,7 @@ void MergingSearcher::suspend(S2EExecutionState *state) {
+ 
+ void MergingSearcher::resume(S2EExecutionState *state) {
+     if (m_debug) {
+-        getDebugStream(NULL) << "MergingSearcher: "
+-                             << "resuming state " << state->getID() << "\n";
++        getDebugStream(NULL) << "resuming state " << state->getID() << "\n";
+     }
+ 
+     m_activeStates.insert(state);
+@@ -126,14 +124,14 @@ bool MergingSearcher::mergeStart(S2EExecutionState *state) {
+     DECLARE_PLUGINSTATE(MergingSearcherState, state);
+ 
+     if (plgState->getGroupId() != 0) {
+-        getWarningsStream(state) << "MergingSearcher: state id already has group id " << plgState->getGroupId() << "\n";
++        getWarningsStream(state) << "state id already has group id " << plgState->getGroupId() << "\n";
+         return false;
+     }
+ 
+     uint64_t id = m_nextMergeGroupId++;
+ 
+     if (m_debug) {
+-        getWarningsStream(state) << "MergingSearcher: starting merge group " << id << "\n";
++        getWarningsStream(state) << "starting merge group " << id << "\n";
+     }
+ 
+     plgState->setGroupId(id);
+@@ -146,12 +144,12 @@ bool MergingSearcher::mergeEnd(S2EExecutionState *state, bool skipOpcode, bool c
+     DECLARE_PLUGINSTATE(MergingSearcherState, state);
+ 
+     if (m_debug) {
+-        getWarningsStream(state) << "MergingSearcher: merging state\n";
++        getWarningsStream(state) << "merging state\n";
+     }
+ 
+     MergePools::iterator it = m_mergePools.find(plgState->getGroupId());
+     if (it == m_mergePools.end()) {
+-        getWarningsStream(state) << "MergingSearcher: state does not belong to a merge group\n";
++        getWarningsStream(state) << "state does not belong to a merge group\n";
+         return false;
+     }
+ 
+@@ -222,13 +220,13 @@ void MergingSearcher::handleOpcodeInvocation(S2EExecutionState *state, uint64_t
+     merge_desc_t command;
+ 
+     if (guestDataSize != sizeof(command)) {
+-        getWarningsStream(state) << "MergingSearcher: mismatched merge_desc_t size"
++        getWarningsStream(state) << "mismatched merge_desc_t size"
+                                  << " got " << guestDataSize << " expected " << sizeof(command) << "\n";
+         return;
+     }
+ 
+     if (!state->mem()->read(guestDataPtr, &command, guestDataSize)) {
+-        getWarningsStream(state) << "MergingSearcher: could not read transmitted data\n";
++        getWarningsStream(state) << "could not read transmitted data\n";
+         return;
+     }
+ 
+diff --git a/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.cpp b/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.cpp
+index e069653..0280b23 100644
+--- a/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.cpp
++++ b/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.cpp
+@@ -190,7 +190,7 @@ void Recipe::onTimer() {
+ }
+ 
+ /* This handler is called after jump is made */
+-void Recipe::onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
++void Recipe::onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
+                                  bool isStatic, uint64_t staticTarget) {
+     if ((tb->flags & HF_CPL_MASK) != 3) {
+         return;
+diff --git a/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.h b/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.h
+index 7b724d2..e7839cc 100644
+--- a/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.h
++++ b/src/s2e/Plugins/VulnerabilityAnalysis/Recipe/Recipe.h
+@@ -102,7 +102,7 @@ private:
+     void instrumentCTI(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
+                        bool isStatic, uint64_t staticTarget);
+ 
+-    void onTranslateBlockEnd(ExecutionSignal *signal, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
++    void onTranslateBlockEnd(ExecutionSignal *signal, EdgeSignal *signal2, S2EExecutionState *state, TranslationBlock *tb, uint64_t pc,
+                              bool isStatic, uint64_t staticTarget);
+ 
+     void onAfterCall(S2EExecutionState *state, uint64_t callInstructionPc);

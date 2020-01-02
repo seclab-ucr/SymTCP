@@ -1,0 +1,20 @@
+FROM gkso/s2e
+
+ENV USERNAME s2e
+RUN mkdir /sym-tcp && \
+    mkdir /sym-tcp/bin && \
+    mkdir /sym-tcp/scripts && \
+    useradd -m $USERNAME && \
+    echo "$USERNAME:$USERNAME" | chpasswd && \
+    usermod --shell /bin/bash $USERNAME && \
+    usermod -aG sudo $USERNAME && \
+    echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/$USERNAME && \
+    chmod 0440 /etc/sudoers.d/$USERNAME && \
+    # replace 1000 with your user/group id
+    usermod --uid 1006 $USERNAME && \
+    groupmod --gid 1006 $USERNAME
+
+COPY run.sh /sym-tcp/
+COPY s2e-config.lua.mine /sym-tcp/
+COPY scripts /sym-tcp/scripts/
+COPY bin /sym-tcp/bin/

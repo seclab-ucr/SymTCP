@@ -1,0 +1,46 @@
+diff --git a/lib/Core/Executor.cpp b/lib/Core/Executor.cpp
+index 19bb240..1bd1f40 100644
+--- a/lib/Core/Executor.cpp
++++ b/lib/Core/Executor.cpp
+@@ -540,10 +540,10 @@ Executor::StatePair Executor::concolicFork(ExecutionState &current, ref<Expr> co
+ 
+     if (current.forkDisabled) {
+         if (conditionIsTrue) {
+-            addConstraint(current, condition);
++            //addConstraint(current, condition);
+             return StatePair(&current, 0);
+         } else {
+-            addConstraint(current, Expr::createIsZero(condition));
++            //addConstraint(current, Expr::createIsZero(condition));
+             return StatePair(0, &current);
+         }
+     }
+@@ -886,7 +886,7 @@ ref<klee::ConstantExpr> Executor::toConstant(ExecutionState &state, ref<Expr> e,
+ 
+     klee_warning_external(reason, "%s", os.str().c_str());
+ 
+-    addConstraint(state, EqExpr::create(e, value));
++    //addConstraint(state, EqExpr::create(e, value));
+ 
+     return value;
+ }
+diff --git a/lib/Expr/Constraints.cpp b/lib/Expr/Constraints.cpp
+index f620446..c6fb9e5 100644
+--- a/lib/Expr/Constraints.cpp
++++ b/lib/Expr/Constraints.cpp
+@@ -8,6 +8,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "klee/Constraints.h"
++#include "klee/Common.h"
+ 
+ #include "klee/util/ExprPPrinter.h"
+ #include "klee/util/ExprVisitor.h"
+@@ -18,6 +19,7 @@
+ namespace klee {
+ 
+ void ConstraintManager::addConstraint(const ref<Expr> e) {
++    *klee_message_stream << "addConstraint: " << e << "\n";
+     switch (e->getKind()) {
+         case Expr::Constant:
+             assert(cast<ConstantExpr>(e)->isTrue() && "attempt to add invalid (false) constraint");

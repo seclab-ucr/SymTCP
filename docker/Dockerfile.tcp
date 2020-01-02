@@ -1,0 +1,10 @@
+FROM gkso/s2e
+
+RUN mkdir /sym-tcp && \
+    mkdir /sym-tcp/bin && \
+    mkdir /sym-tcp/scripts
+
+COPY run.sh /sym-tcp/
+COPY s2e-config.lua.mine /sym-tcp/
+COPY scripts /sym-tcp/scripts/
+COPY bin /sym-tcp/bin/

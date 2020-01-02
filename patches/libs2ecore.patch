@@ -1,0 +1,248 @@
+diff --git a/include/s2e/CorePlugin.h b/include/s2e/CorePlugin.h
+index e8447b2..2824078 100644
+--- a/include/s2e/CorePlugin.h
++++ b/include/s2e/CorePlugin.h
+@@ -36,6 +36,8 @@ class S2EExecutionState;
+ /// destroyed on demand during translation.
+ ///
+ typedef sigc::signal<void, S2EExecutionState *, uint64_t /* PC */> ExecutionSignal;
++// wzj
++typedef sigc::signal<void, S2EExecutionState *, uint64_t /* PC */, uint64_t /* Next PC */> EdgeSignal;
+ 
+ class CorePlugin : public Plugin {
+     S2E_PLUGIN
+@@ -78,6 +80,7 @@ public:
+     ///
+     sigc::signal<void,
+                  ExecutionSignal*,
++                 EdgeSignal*,
+                  S2EExecutionState*,
+                  TranslationBlock*,
+                  uint64_t /* ending instruction PC */,
+diff --git a/include/s2e/S2EExecutionState.h b/include/s2e/S2EExecutionState.h
+index 2074b84..e9cc42c 100644
+--- a/include/s2e/S2EExecutionState.h
++++ b/include/s2e/S2EExecutionState.h
+@@ -386,6 +386,11 @@ public:
+                           const std::vector<std::pair<const klee::MemoryObject *, const klee::Array *>> &symbolics,
+                           llvm::raw_ostream &os);
+     void dumpQuery(llvm::raw_ostream &os) const;
++    // wzj
++    static void dumpQuerySMTv2(const klee::ConstraintManager &constraints,
++                               const std::vector<std::pair<const klee::MemoryObject *, const klee::Array *>> &symbolics,
++                               llvm::raw_ostream &os);
++    void dumpQuerySMTv2(llvm::raw_ostream &os) const;
+ };
+ }
+ 
+diff --git a/include/s2e/S2EExecutor.h b/include/s2e/S2EExecutor.h
+index 6ac68aa..4a82a5e 100644
+--- a/include/s2e/S2EExecutor.h
++++ b/include/s2e/S2EExecutor.h
+@@ -205,6 +205,11 @@ public:
+      */
+     klee::Executor::StatePair forkAndConcretize(S2EExecutionState *state, klee::ref<klee::Expr> &value_);
+ 
++    // wzj
++    void setExecuteAlwaysKlee(bool enabled) {
++        m_executeAlwaysKlee = enabled;
++    }  
++
+ protected:
+     void updateClockScaling();
+ 
+@@ -356,6 +361,8 @@ struct S2ETranslationBlock {
+         when this translation block will be flushed.
+         XXX: how could we avoid using void* here ? */
+     std::vector<void *> executionSignals;
++    // wzj
++    std::vector<void *> edgeSignals;
+ };
+ 
+ } // namespace s2e
+diff --git a/include/s2e/s2e_libcpu_coreplugin.h b/include/s2e/s2e_libcpu_coreplugin.h
+index 4418293..d020734 100644
+--- a/include/s2e/s2e_libcpu_coreplugin.h
++++ b/include/s2e/s2e_libcpu_coreplugin.h
+@@ -22,6 +22,8 @@ extern "C" {
+ struct TranslationBlock;
+ 
+ void s2e_tcg_execution_handler(void *signal, uint64_t pc);
++// wzj
++void s2e_tcg_edge_handler(void *signal, uint64_t pc, uint64_t nextpc);
+ void s2e_tcg_custom_instruction_handler(uint64_t arg);
+ 
+ /** Called by the translator when a custom instruction is detected */
+diff --git a/src/CorePluginInterface.cpp b/src/CorePluginInterface.cpp
+index 117fd39..a7df8a6 100644
+--- a/src/CorePluginInterface.cpp
++++ b/src/CorePluginInterface.cpp
+@@ -55,6 +55,18 @@ void s2e_tcg_execution_handler(void *signal, uint64_t pc) {
+     }
+ }
+ 
++// wzj
++void s2e_tcg_edge_handler(void *signal, uint64_t pc, uint64_t nextpc) {
++    try {
++        EdgeSignal *s = (EdgeSignal *) signal;
++        if (g_s2e_enable_signals) {
++            s->emit(g_s2e_state, pc, nextpc);
++        }
++    } catch (s2e::CpuExitException &) {
++        longjmp(env->jmp_env, 1);
++    }
++}
++
+ void s2e_tcg_custom_instruction_handler(uint64_t arg) {
+     assert(!g_s2e->getCorePlugin()->onCustomInstruction.empty() &&
+            "You must activate a plugin that uses custom instructions.");
+@@ -122,6 +134,38 @@ static void s2e_tcg_instrument_code(ExecutionSignal *signal, uint64_t pc, uint64
+     tcg_temp_free_ptr(t0);
+ }
+ 
++// wzj
++/* Instrument generated code to emit signal on edge execution */
++/* Next pc indicates the start address of the next code block. */
++static void s2e_tcg_instrument_edge_code(EdgeSignal *signal, uint64_t pc, uint64_t nextpc) {
++    TCGv_ptr t0 = tcg_temp_new_ptr();
++    TCGv_i64 t1 = tcg_temp_new_i64();
++    TCGv_i64 t2 = tcg_temp_new_i64();
++
++    // XXX: here we rely on CPUState being the first tcg global temp
++    TCGArg args[3];
++    args[0] = GET_TCGV_PTR(t0);
++    args[1] = GET_TCGV_I64(t1);
++    args[2] = GET_TCGV_I64(t2);
++
++#if TCG_TARGET_REG_BITS == 64
++    const int sizemask = 4 | 2;
++    tcg_gen_movi_i64(TCGV_PTR_TO_NAT(t0), (tcg_target_ulong) signal);
++#else
++    const int sizemask = 4;
++    tcg_gen_movi_i32(TCGV_PTR_TO_NAT(t0), (tcg_target_ulong) signal);
++#endif
++
++    tcg_gen_movi_i64(t1, pc);
++    tcg_gen_movi_i64(t2, nextpc);
++
++    tcg_gen_helperN((void *) s2e_tcg_edge_handler, 0, sizemask, TCG_CALL_DUMMY_ARG, 3, args);
++
++    tcg_temp_free_i64(t2);
++    tcg_temp_free_i64(t1);
++    tcg_temp_free_ptr(t0);
++}
++
+ void s2e_on_translate_soft_interrupt_start(void *context, TranslationBlock *tb, uint64_t pc, unsigned vector) {
+     assert(g_s2e_state->isActive());
+ 
+@@ -166,9 +210,12 @@ void s2e_on_translate_block_end(TranslationBlock *tb, uint64_t insPc, int static
+     S2ETranslationBlock *se_tb = static_cast<S2ETranslationBlock *>(tb->se_tb);
+     ExecutionSignal *signal = static_cast<ExecutionSignal *>(se_tb->executionSignals.back());
+     assert(signal->empty());
++	// wzj
++    EdgeSignal *signal2 = static_cast<EdgeSignal *>(se_tb->edgeSignals.back());
++    assert(signal2->empty());
+ 
+     try {
+-        g_s2e->getCorePlugin()->onTranslateBlockEnd.emit(signal, g_s2e_state, tb, insPc, staticTarget, targetPc);
++        g_s2e->getCorePlugin()->onTranslateBlockEnd.emit(signal, signal2, g_s2e_state, tb, insPc, staticTarget, targetPc);
+     } catch (s2e::CpuExitException &) {
+         longjmp(env->jmp_env, 1);
+     }
+@@ -177,6 +224,11 @@ void s2e_on_translate_block_end(TranslationBlock *tb, uint64_t insPc, int static
+         s2e_tcg_instrument_code(signal, insPc - tb->cs_base);
+         se_tb->executionSignals.push_back(new ExecutionSignal);
+     }
++	// wzj
++    if (!signal2->empty()) {
++        s2e_tcg_instrument_edge_code(signal2, insPc - tb->cs_base, targetPc - tb->cs_base);
++        se_tb->edgeSignals.push_back(new EdgeSignal);
++    }
+ }
+ 
+ void s2e_on_translate_block_complete(TranslationBlock *tb, uint64_t pc) {
+diff --git a/src/S2EExecutionState.cpp b/src/S2EExecutionState.cpp
+index e96d7a9..63fa085 100644
+--- a/src/S2EExecutionState.cpp
++++ b/src/S2EExecutionState.cpp
+@@ -24,6 +24,7 @@
+ #include <s2e/s2e_libcpu.h>
+ 
+ #include <klee/util/ExprPPrinter.h>
++#include <klee/util/ExprSMTLIBPrinter.h>
+ #include <llvm/Support/CommandLine.h>
+ #include <s2e/CorePlugin.h>
+ 
+@@ -1162,6 +1163,29 @@ void S2EExecutionState::dumpQuery(llvm::raw_ostream &os) const {
+     dumpQuery(constraints, symbolics, os);
+ }
+ 
++// wzj
++void S2EExecutionState::dumpQuerySMTv2(const ConstraintManager &constraints,
++    const std::vector<std::pair<const klee::MemoryObject *, const klee::Array *>> &symbolics, llvm::raw_ostream &os) {
++    ExprSMTLIBPrinter printer;
++    printer.setOutput(os);
++
++    // Extract symbolic objects
++    std::vector<const Array *> symbObjects;
++    for (unsigned i = 0; i < symbolics.size(); ++i) {
++        symbObjects.push_back(symbolics[i].second);
++    }
++    printer.setArrayValuesToGet(symbObjects);
++
++    Query query(constraints, ConstantExpr::alloc(0, Expr::Bool));
++    printer.setQuery(query);
++
++    printer.generateOutput();
++}
++
++void S2EExecutionState::dumpQuerySMTv2(llvm::raw_ostream &os) const {
++    dumpQuerySMTv2(constraints, symbolics, os);
++}
++
+ } // namespace s2e
+ 
+ /******************************************/
+diff --git a/src/S2EExecutor.cpp b/src/S2EExecutor.cpp
+index e791fc4..12a8d8b 100644
+--- a/src/S2EExecutor.cpp
++++ b/src/S2EExecutor.cpp
+@@ -2639,6 +2639,10 @@ void S2EExecutor::unrefS2ETb(S2ETranslationBlock *se_tb) {
+     foreach2 (it, se_tb->executionSignals.begin(), se_tb->executionSignals.end()) {
+         delete static_cast<ExecutionSignal *>(*it);
+     }
++    // wzj
++    foreach2 (it, se_tb->edgeSignals.begin(), se_tb->edgeSignals.end()) {
++        delete static_cast<EdgeSignal *>(*it);
++    }
+ 
+     delete se_tb;
+ }
+@@ -2667,6 +2671,8 @@ void s2e_initialize_execution(int execute_always_klee) {
+     g_s2e->getExecutor()->initializeExecution(g_s2e_state, execute_always_klee);
+     // XXX: move it to better place (signal handler for this?)
+     tcg_register_helper((void *) &s2e_tcg_execution_handler, "s2e_tcg_execution_handler");
++    // wzj
++    tcg_register_helper((void *) &s2e_tcg_edge_handler, "s2e_tcg_edge_handler");
+     tcg_register_helper((void *) &s2e_tcg_custom_instruction_handler, "s2e_tcg_custom_instruction_handler");
+ }
+ 
+@@ -2725,6 +2731,8 @@ void se_tb_alloc(TranslationBlock *tb) {
+ 
+     /* Push one copy of a signal to use it as a cache */
+     se_tb->executionSignals.push_back(new s2e::ExecutionSignal);
++    // wzj
++    se_tb->edgeSignals.push_back(new s2e::EdgeSignal);
+ 
+     tb->se_tb_next[0] = 0;
+     tb->se_tb_next[1] = 0;
+@@ -2735,7 +2743,8 @@ void se_tb_alloc(TranslationBlock *tb) {
+ int s2e_is_tb_instrumented(TranslationBlock *tb) {
+     S2ETranslationBlock *se_tb = static_cast<S2ETranslationBlock *>(tb->se_tb);
+     unsigned size = se_tb->executionSignals.size();
+-    return size > 1;
++    unsigned size2 = se_tb->edgeSignals.size();
++    return size > 1 || size2 > 1;
+ }
+ 
+ void s2e_set_tb_function(TranslationBlock *tb) {

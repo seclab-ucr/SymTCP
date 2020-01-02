@@ -1,0 +1,1 @@
+alert tcp any any -> any any (msg: "Bad keyword detected!"; content: "ultrasurf"; http_uri; sid: 1;)

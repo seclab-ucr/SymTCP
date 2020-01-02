@@ -1,0 +1,22 @@
+<!doctype html>
+<title>Addr2Line</title>
+
+<script type="text/javascript" src="/static/jquery-3.4.0.min.js"></script>
+
+<textarea id="log1" rows="25" cols="225">
+</textarea>
+
+<button id="submit">Click</button>
+
+<textarea id="log2" rows="25" cols="225">
+</textarea>
+
+<script>
+$("#submit").click(function() {
+    var log_text = $("#log1").val();
+    $.post("/translate", {log: log_text}, function(data) {
+        $("#log2").val(data);
+    });
+});
+</script>
+

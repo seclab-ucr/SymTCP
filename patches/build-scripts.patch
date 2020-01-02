@@ -1,0 +1,42 @@
+diff --git a/Makefile.docker b/Makefile.docker
+index beb1b7a..4674ecf 100644
+--- a/Makefile.docker
++++ b/Makefile.docker
+@@ -5,6 +5,7 @@
+ 
+ # Creates a docker image containing a ready-to-run S2E demo.
+ all: demo
++tcp: stamps/docker-sym-tcp
+ demo: stamps/decree-demo
+ 
+ # Check the build directory
+@@ -17,7 +18,7 @@ BUILD_SCRIPTS_SRC?=$(dir $(realpath $(lastword $(MAKEFILE_LIST))))
+ S2E_SRC?=$(realpath $(BUILD_SCRIPTS_SRC)/../)
+ S2E_BUILD:=$(CURDIR)
+ 
+-DOCKER_PREFIX=cyberhaven
++DOCKER_PREFIX=gkso
+ 
+ ##########
+ # Docker #
+@@ -32,7 +33,7 @@ stamps/docker-s2e-build: | stamps
+ 	cd $(S2E_SRC) && docker build -t $(DOCKER_PREFIX)/s2e-build -f Dockerfile .
+ 	touch $@
+ 
+-$(S2E_BUILD)/docker $(S2E_BUILD)/docker-demo:
++$(S2E_BUILD)/docker $(S2E_BUILD)/docker-demo $(S2E_BUILD)/docker-sym-tcp:
+ 	mkdir -p "$@"
+ 
+ # This rule creates a container that only has S2E binaries in it.
+@@ -58,3 +59,11 @@ stamps/decree-demo: $(S2E_BUILD)/docker-demo stamps/docker-s2e
+ 	cp $(S2E_SRC)/decree/samples/* $(S2E_BUILD)/docker-demo
+ 	cd $(S2E_BUILD)/docker-demo && docker build -t $(DOCKER_PREFIX)/s2e-demo -f Dockerfile.demo .
+ 	touch $@
++
++stamps/docker-sym-tcp: $(S2E_BUILD)/docker-sym-tcp stamps/docker-s2e
++	echo Building docker-sym-tcp...
++	rsync -av --delete --exclude=.git $(S2E_SRC)/sym-tcp/docker/ $(S2E_BUILD)/docker-sym-tcp/
++	rsync -av --delete --exclude=.git $(S2E_SRC)/sym-tcp/scripts $(S2E_BUILD)/docker-sym-tcp/
++	rsync -av --delete --exclude=.git $(S2E_SRC)/sym-tcp/bin $(S2E_BUILD)/docker-sym-tcp/
++	cd $(S2E_BUILD)/docker-sym-tcp && docker build -t $(DOCKER_PREFIX)/sym-tcp -f Dockerfile.tcp .
++	touch $@

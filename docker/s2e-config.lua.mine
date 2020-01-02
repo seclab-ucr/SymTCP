@@ -1,0 +1,127 @@
+
+
+
+-- RawMonitor
+--add_plugin("RawMonitor")
+--pluginsConfig.RawMonitor = {
+--    kernelStart = 0xc0000000,
+--    vmlinux = {
+--        delay = false,
+--        name = "vmlinux",
+--        start = 0xc0000000,
+--        size = 256515892, -- whatever the size of Linux kernel is
+--        nativebase = 0xc0000000,
+--        kernelmode = true
+--    }
+--}
+
+add_plugin("FunctionMonitor")
+
+add_plugin("MemRangeDetector") 
+pluginsConfig.MemRangeDetector = {
+    net_ipv4 = {
+        startAddr = 0xffffffff817659c0,
+        endAddr = 0xffffffff8205353b
+    }
+}
+
+add_plugin("TCPSymbolizer")
+pluginsConfig.TCPSymbolizer = {
+    logLevel="debug",
+    concretePacketCounter = 0,
+    symbolicPacketCounter = 3,
+}
+
+--add_plugin("TranslationBlockTracer")
+--pluginsConfig.TranslationBlockTracer = {
+--    manualTrigger = true,
+--    flushTbCache = true,
+--}
+
+--add_plugin("MemoryTracer")
+--pluginsConfig.MemoryTracer = {
+--    monitorStack = false,
+--    manualTrigger = true,
+--    monitorMemory = true,
+--    monitorPageFaults = false,
+--    monitorTlbMisses = false,
+--}
+
+add_plugin("BranchCoverage") 
+pluginsConfig.BranchCoverage = {
+    branchCoverageInfoFile = "./bc_info"
+}
+
+add_plugin("MyDebugger") 
+pluginsConfig.MyDebugger = {
+    addressToTrack = {
+        0xffffffff817830f3, --tcp_input.c:3616
+        0xffffffff81781e37, --tcp_input.c:3736
+        0xffffffff81781e8b, --tcp_input.c:3750
+        0xffffffff817841d6, --tcp_input.c:4386
+        0xffffffff8178493a, --tcp_input.c:4503
+        0xffffffff8178491a, --tcp_input.c:4522
+        0xffffffff8178444f, --tcp_input.c:4551
+        0xffffffff81784128, --tcp_input.c:4641
+        0xffffffff81783d5d, --tcp_input.c:4716
+        0xffffffff8177ccb4, --tcp_input.c:4967
+        0xffffffff8177e0fb, --tcp_input.c:5195
+        0xffffffff8178553e, --tcp_input.c:6124
+        0xffffffff817908e3, --tcp_ipv4.c:1655
+        0xffffffff8179152f, --tcp_minisocks.c:620
+        0xffffffff817917b7, --tcp_minisocks.c:714
+        0xffffffff81791695, --tcp_minisocks.c:758
+        0xffffffff81791611, --tcp_minisocks.c:783(1)
+        0xffffffff8179175c, --tcp_minisocks.c:783(2)
+        -- TCP timer timeout
+        --0xffffffff8178bc9d, --tcp_timer.c:381
+        --0xffffffff8178b881, --tcp_timer.c:676
+    },
+    edgeToTrack = {
+        "0xffffffff8178486f:0xffffffff81783de7",    --tcp_input.c:4444
+        "0xffffffff81783e2c:0xffffffff81783d96",    --tcp_input.c:4657
+        "0xffffffff8178404a:0xffffffff81783d96",    --tcp_input.c:4729
+        "0xffffffff817840f0:0xffffffff81783d96",    --tcp_input.c:4745
+        "0xffffffff81783a5e:0xffffffff81783a00",    --tcp_input.c:5270(1)
+        "0xffffffff81783b13:0xffffffff81783a00",    --tcp_input.c:5270(2)
+        "0xffffffff817839de:0xffffffff817839e0",    --tcp_input.c:5284
+        "0xffffffff817838e1:0xffffffff81783a00",    --tcp_input.c:5291(1)
+        "0xffffffff817839d9:0xffffffff81783a00",    --tcp_input.c:5291(2)
+        "0xffffffff81783a51:0xffffffff81783a00",    --tcp_input.c:5291(3)
+        "0xffffffff81783985:0xffffffff817839f8",    --tcp_input.c:5325(1)
+        "0xffffffff81783990:0xffffffff817839f8",    --tcp_input.c:5325(2)
+        "0xffffffff81783a62:0xffffffff817839f8",    --tcp_input.c:5325(3)
+        "0xffffffff81783a1e:0xffffffff81783a20",    --tcp_input.c:5333
+        "0xffffffff81784aa2:0xffffffff81784a40",    --tcp_input.c:5453
+        "0xffffffff81784cfa:0xffffffff81784a30",    --tcp_input.c:5487
+        "0xffffffff81784a2a:0xffffffff81784a30",    --tcp_input.c:5531
+        "0xffffffff81784b34:0xffffffff81784a50",    --tcp_input.c:5534
+        "0xffffffff81784b67:0xffffffff81784a50",    --tcp_input.c:5545
+        "0xffffffff81785467:0xffffffff81785543",    --tcp_input.c:5911
+        "0xffffffff8178546f:0xffffffff8178538f",    --tcp_input.c:5914
+        "0xffffffff8178547f:0xffffffff8178538f",    --tcp_input.c:5918
+        "0xffffffff81785477:0xffffffff8178538f",    --tcp_input.c:5925
+        "0xffffffff81785382:0xffffffff8178538f",    --tcp_input.c:5947
+        "0xffffffff81785389:0xffffffff8178538f",    --tcp_input.c:5951
+        "0xffffffff81785675:0xffffffff8178538f",    --tcp_input.c:6141
+        "0xffffffff8178f011:0xffffffff8178f013",    --tcp_ipv4.c:1404
+        "0xffffffff8178f141:0xffffffff8178f090",    --tcp_ipv4.c:1410(1)
+        "0xffffffff8178f175:0xffffffff8178f090",    --tcp_ipv4.c:1410(2)
+        "0xffffffff8178fffd:0xffffffff817900d1",    --tcp_ipv4.c:1607
+        "0xffffffff817902d6:0xffffffff817900de",    --tcp_ipv4.c:1609(1)
+        "0xffffffff817902e9:0xffffffff817900de",    --tcp_ipv4.c:1609(2)
+        "0xffffffff817900be:0xffffffff817900c4",    --tcp_ipv4.c:1617
+        "0xffffffff81790776:0xffffffff817904ed",    --tcp_ipv4.c:1690
+        "0xffffffff81791650:0xffffffff81791425",    --tcp_minisocks.c:745
+        -- TCP timer timeout
+        --"0xffffffff8178be6d:0xffffffff8178bc9d",    --tcp_timer.c:238
+        --"0xffffffff8178c406:0xffffffff8178c40c",    --tcp_timer.c:358-359
+        --"0xffffffff8178c3e7:0xffffffff8178c40c",    --tcp_timer.c:345
+        --"0xffffffff8178c47e:0xffffffff8178c40c",    --tcp_timer.c:353
+        --"0xffffffff8178bd28:0xffffffff8178bc9d",    --tcp_timer.c:455
+    },
+    terminateAtDropPoint = true,
+}
+
+add_plugin("MyVmi") 
+
