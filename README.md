@@ -117,7 +117,7 @@ DOI:https://dx.doi.org/10.14722/ndss.2020.24083
 
 ```
 @inproceedings{wang2020symtcp,
-  title={SymTCP: Eluding Stateful Deep Packet Inspection with Automated Discrepancy Discovery.},
+  title={SymTCP: Eluding Stateful Deep Packet Inspection with Automated Discrepancy Discovery},
   author={Wang, Zhongjie and Zhu, Shitong and Cao, Yue and Qian, Zhiyun and Song, Chengyu and Krishnamurthy, Srikanth V and Chan, Kevin S and Braun, Tracy D},
   booktitle={NDSS},
   year={2020}
