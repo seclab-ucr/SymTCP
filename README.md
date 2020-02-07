@@ -116,13 +116,11 @@ Zhongjie Wang, Shitong Zhu, Yue Cao, Zhiyun Qian, Chengyu Song, Srikanth Krishna
 DOI:https://dx.doi.org/10.14722/ndss.2020.24083
 
 ```
-@inproceedings{cao2019principled,
-  title={Principled Unearthing of TCP Side Channel Vulnerabilities},
-  author={Cao, Yue and Wang, Zhongjie and Qian, Zhiyun and Song, Chengyu and Krishnamurthy, Srikanth V and Yu, Paul},
-  booktitle={Proceedings of the 2019 ACM SIGSAC Conference on Computer and Communications Security},
-  pages={211--224},
-  year={2019},
-  organization={ACM}
+@inproceedings{wang2020symtcp,
+  title={SymTCP: Eluding Stateful Deep Packet Inspection with Automated Discrepancy Discovery.},
+  author={Wang, Zhongjie and Zhu, Shitong and Cao, Yue and Qian, Zhiyun and Song, Chengyu and Krishnamurthy, Srikanth V and Chan, Kevin S and Braun, Tracy D},
+  booktitle={NDSS},
+  year={2020}
 }
 ```
 
