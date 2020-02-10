@@ -107,6 +107,12 @@ Examples:
 ./probe_dpi.py -p 20 -P -F -N 50 -S 0  (Split the dataset into 50 chunks and use the first chunk)
 ```
 
+## Applying SymTCP to another version of Linux kernel
+
+In our research, we used Linux kernel v4.9.3 as the targeted server implementation. Our tool can also be applied to other version of Linux kernel as well (or even other OSes), and it can also be used to probe other DPI systems with little additional efforts. 
+
+To apply to another version of Linux kernel, you will need to have the binary of the Linux kernel (the *vmlinux* file) in order to label drop points and/or accept points on it. The drop points used in S2E are at binary level, configured in *s2e-config.lua* in the S2E project folder. A typicial approach to label drop points and/or accept points is to label them in the source code first, by backtracing from sinks such as tcp_drop, kfree_skb, etc, and then map the source code line to binary address with tools such as objdump. There are also some hard coded memory address in the S2E plugin we wrote, you will also need to update those addresses according to the new version of Linux kernel. 
+
 # Publication 
 
 Check our NDSS'20 paper for more technical details[[PDF](https://www.cs.ucr.edu/~zhiyunq/pub/ndss20_symtcp.pdf)]
