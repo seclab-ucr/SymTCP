@@ -23,6 +23,12 @@ SymTCP is a tool used to automatically discover subtle discrepancies between two
 
 # Usage
 
+## Requirement
+
+- Ubuntu 16.04/18.04 (Other Linux-based system might work as well)
+- [Z3 Solver](https://github.com/Z3Prover/z3) with Python library (v4.8.7)
+- root privilege (for sending raw packets)
+
 ## Setup S2E
 
 We are using a S2E 2.0 version fetched in Apr, 2019 (can be found in [release](https://github.com/seclab-ucr/sym-tcp/releases/tag/1.0.1)). Using a newer version of S2E requires porting the code in the *patches* folder to the newer version. 
@@ -106,6 +112,12 @@ Examples:
 ./probe_dpi.py -p 20 -P -F             (20-byte options and payload, dump packets, try different flags)
 ./probe_dpi.py -p 20 -P -F -N 50 -S 0  (Split the dataset into 50 chunks and use the first chunk)
 ```
+
+The results can be found in the *probe_dpi_result* file under current folder. And detailed logs will be output to the *probe_dpi.log* file.
+
+*probe_dpi.py* needs to read DPI logs from local paths in order to check whether it succeeds or not. You will need to configure the path variables in the script. 
+
+*probe_dpi.py* also loads a list of server IP addresses from a *server_list* file (for probing the GFW) or a *server_list.local* file (for probing DPIs) in order to balance work loads. In such a file, each line is a server's IP address. 
 
 ## Applying SymTCP to another version of Linux kernel
 
