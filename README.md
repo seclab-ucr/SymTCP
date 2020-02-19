@@ -26,7 +26,7 @@ SymTCP is a tool used to automatically discover subtle discrepancies between two
 ## Requirement
 
 - Ubuntu 16.04/18.04 (Other Linux-based system might work as well)
-- [Z3 Solver](https://github.com/Z3Prover/z3) with Python library (v4.8.7)
+- [Z3 Solver](https://github.com/Z3Prover/z3) with Python library (v4.8.5)
 - root privilege (for sending raw packets)
 
 ## Setup S2E
