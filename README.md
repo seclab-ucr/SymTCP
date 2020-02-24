@@ -1,4 +1,4 @@
-# SymTCP - Automatically Discrepancy Discovery for DPI (Deep Packet Inspection) Elusion
+# SymTCP - Automatic Discrepancy Discovery for DPI (Deep Packet Inspection) Elusion
 
 SymTCP is a tool used to automatically discover subtle discrepancies between two TCP implementations, e.g., how they accept and drop packets. Specifically, it can find the discrepancies between a server and a DPI, and use them to elude the DPI, e.g., a packet accepted by the server but ignored by the DPI. It first runs symbolic execution on the server's TCP implementation (whitebox) and collect program execution paths labeled as either "accept" path or "drop" path. Symbolic execution will generate the input packet sequence for each execution paths. Then it probes the DPI (blackbox) with the packet sequences generated and finds if they are processed the same by the DPI as the server. You can find more information in [our NDSS paper](https://www.cs.ucr.edu/~zhiyunq/pub/ndss20_symtcp.pdf).
 
